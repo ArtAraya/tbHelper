@@ -31,7 +31,6 @@ Class ucRTFMessage
     Private m_StyleSegment As StyledSegment
     
     Private m_DPIFontSize As Integer
-    Private m_DPI_Horizontal As Long
     Private m_DPI_Vertical As Long
     Private m_DPIRowHeight As Integer
     
@@ -48,7 +47,6 @@ Class ucRTFMessage
     Const DEFAULT_PITCH = 0
     Const FF_DONTCARE = 0
     Const DEF_FONT_SIZE = 12.75
-    Const MAX_FONT_SIZE As Long = 13
         
     Private WithEvents m_Canvas As PictureBox
     
@@ -86,13 +84,12 @@ Class ucRTFMessage
     
     Private Sub UserControl_Initialize()
         
-        ' Get the horizontal and vertical DPI values
-        m_DPI_Horizontal = GetDeviceCaps(hDC, LOGPIXELSX)
-        m_DPI_Vertical = GetDeviceCaps(hDC, LOGPIXELSY)
+        ' Point sizes are already DPI-independent. Pixel padding uses the scale below.
+        m_DPI_Vertical = CLng(GetDPIScale() * BASE_DPI)
+        If m_DPI_Vertical < BASE_DPI Then m_DPI_Vertical = BASE_DPI
 
         m_BackColor = RGB(240, 240, 240)
-        m_DPIFontSize = DEF_FONT_SIZE * (m_DPI_Horizontal / BASE_DPI)
-        If m_DPIFontSize > MAX_FONT_SIZE Then m_DPIFontSize = MAX_FONT_SIZE
+        m_DPIFontSize = DEF_FONT_SIZE
         
         ' Create canvas for the change log items
         Set m_Canvas = Controls.Add("VB.PictureBox", "Canvas")
@@ -171,7 +168,11 @@ Class ucRTFMessage
     End Function
 
     Function ScaleFontSize(size As Long) As Long
-        ScaleFontSize = MulDiv(size, m_DPI_Vertical, BASE_DPI)
+        ' CreateFont uses a negative value as the character height in pixels.
+        Dim points As Long
+        points = Abs(size)
+        If points = 0 Then points = DEF_FONT_SIZE
+        ScaleFontSize = -MulDiv(points, m_DPI_Vertical, 72)
     End Function
     
     Private Sub DrawMessage()
@@ -185,7 +186,7 @@ Class ucRTFMessage
         Dim debugSegmentWritten As String
         
         hDC = m_Canvas.hDC
-        canvasWidth = m_Canvas.Width \ Screen.TwipsPerPixelX
+        canvasWidth = m_Canvas.ScaleWidth
         x = 0: y = MulDiv(10, m_DPI_Vertical, BASE_DPI) ' give a little padding at the top of the message area
 
         Dim segments As Collection
@@ -272,7 +273,7 @@ Class ucRTFMessage
                     Set seg = New clsStyleSegment
                     seg.Text = currentText
                     seg.FontName = currentFontName
-                    seg.FontSize = currentFontSize * -1
+                    seg.FontSize = currentFontSize
                     seg.Color = currentColor
                     seg.Bold = currentBold
                     seg.Italic = currentItalic
@@ -310,7 +311,7 @@ Class ucRTFMessage
                                     If UBound(kv) = 1 Then
                                         Select Case LCase(kv(0))
                                             Case "name": currentFontName = Replace(kv(1), """", "")
-                                            Case "size": currentFontSize = CLng("-" & kv(1) * (m_DPI_Horizontal / BASE_DPI))      '  CLng("-" & kv(1))
+                                            Case "size": currentFontSize = CLng(Val(kv(1)))
                                             Case "color"
                                                 Select Case LCase(kv(1))
                                                     Case "vbred": currentColor = vbRed
@@ -350,7 +351,7 @@ Class ucRTFMessage
             Set seg = New clsStyleSegment
             seg.Text = currentText
             seg.FontName = currentFontName
-            seg.FontSize = currentFontSize * -1
+            seg.FontSize = currentFontSize
             seg.Color = currentColor
             seg.Bold = currentBold
             seg.Italic = currentItalic

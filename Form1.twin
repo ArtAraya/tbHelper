@@ -31,10 +31,8 @@ Class Form1
     
     ' calc font size for dropdown drive list infor
     Private drop_DPIFontSize As Integer
+    Private lastInstallError As String
     Private Const TEXT_BASE_FONT_SIZE = 9.75
-
-    Private Const MAX_FONT_SIZE As Long = 13
-    Private Const BASE_DPI = 96
         
     Private Sub Form_Load()
         
@@ -214,7 +212,9 @@ Class Form1
             ' example of the dowmload url: https://github.com/twinbasic/twinbasic/releases/download/beta-x-0641/twinBASIC_IDE_BETA_641.zip
             Dim newReleaseURL As String = githubReleasesURL & "/download/beta-x-" & IIf(chgLogs.LatestVersion < 1000, "0" & CStr(chgLogs.LatestVersion), chgLogs.LatestVersion)
             Dim justTheFileName As String = "twinBASIC_IDE_BETA_" & chgLogs.LatestVersion & ".zip"
-            Dim localZipFileName As String = txtDownloadFolder.Text & justTheFileName
+            Dim downloadFolder As String = txtDownloadFolder.Text
+            If Len(downloadFolder) > 0 And Right$(downloadFolder, 1) <> "\" Then downloadFolder = downloadFolder & "\"
+            Dim localZipFileName As String = downloadFolder & justTheFileName
             Dim downloadTheZip As Boolean = True
         
             'WriteToDebugLogFile("Form1 - btnDownload: Click as Download function")
@@ -256,7 +256,12 @@ Class Form1
             UpdateActivityLog IIf(downloadTheZip, "Yes", "No"), True
             If downloadTheZip Then
                 UpdateActivityLog "Downloading twinBasic " & chgLogs.LatestVersion
-                URLDownloadToFile 0, newReleaseURL & "/" & justTheFileName, localZipFileName, 0, 0
+                If Not DownloadUrlToFile(newReleaseURL & "/" & justTheFileName, localZipFileName) Then
+                    UpdateActivityLog "Download failed. twinBASIC was not changed."
+                    Me.MousePointer = vbDefault
+                    MessageBox("The download did not finish, so the twinBASIC folder was not changed.", "error", "Download failed")
+                    Exit Sub
+                End If
                 UpdateActivityLog "done ", True
             End If
         
@@ -728,49 +733,181 @@ Class Form1
     
     End Sub
 
+    Private Function PlainMessage(ByVal messageText As String) As String
+        ' MessageBox treats square brackets as style tags.
+        PlainMessage = Replace(Replace(messageText, "[", "("), "]", ")")
+    End Function
+
+    Private Function WaitUntilTwinBasicIsClosed(ByVal actionName As String) As Boolean
+        
+        ' The compiled helper can replace files only while twinBASIC.exe is not locking them.
+        ' When this project is running inside the IDE, closing the IDE is not an option.
+        If IsCodeRunningInTheIDE Then
+            WaitUntilTwinBasicIsClosed = True
+            Exit Function
+        End If
+        
+        Do While IsProcessRunning("twinbasic.exe")
+            Dim response As String
+            response = MessageBox("[font color=vbred]The twinBASIC IDE is running[/font]. Close it before the " & actionName & " can replace the program files." & vbCrLf & _
+                "[font color=blue]Close the IDE, then click Retry. Click Cancel to leave the current version in place.[/font]", _
+                "warning", "twinBASIC is running", "Retry", "Cancel")
+            If StrComp(response, "Cancel", vbTextCompare) = 0 Or response = vbNullChar Or Len(response) = 0 Then
+                WaitUntilTwinBasicIsClosed = False
+                Exit Function
+            End If
+        Loop
+        
+        WaitUntilTwinBasicIsClosed = True
+        
+    End Function
+
     Private Function InstallTwinBasic(tBZipFile As String) As Boolean
         
-        ' go through the steps of deleting the current files and unziping the new files
-        ' to the folder that has been desgniated
-        'WriteToDebugLogFile("           InstallTwinBasic " & tBZipFile & " - start")
-        Dim result As Boolean
-    
-        On Error GoTo ErrorUnZiping
-    
-        ' delete current files & recreate the folder
-        Dim SHFileOp As SHFILEOPSTRUCT
-        Dim RetVal As Long
-        With SHFileOp
-            .wFunc = FO_DELETE
-            .pFrom = tbHelperSettings.twinBASICFolder.Path
-            .fFlags = FOF_ALLOWUNDO
-        End With
-        RetVal = SHFileOperation(SHFileOp)
+        ' Extract the zip beside the live folder and swap only after twinBASIC.exe
+        ' is present in the new copy. The previous folder is renamed aside, not
+        ' deleted, and is put back if the swap fails.
+        Dim installPath As String
+        Dim parentPath As String
+        Dim folderName As String
+        Dim stagingPath As String
+        Dim backupPath As String
+        Dim stagedRoot As String
+        Dim originalMoved As Boolean
+        Dim zip As cZipArchive
         
-        'unzip to the twinBasic folder
-        With New cZipArchive
-            .OpenArchive tBZipFile
-            .Extract tbHelperSettings.twinBASICFolder.Path
-        End With
-    
-        'DoEvents()
-        ' ************************** this asks for admin rights, the complete zip isn't decompressed 2-24-25
-        ' timing perhaps?
+        On Error GoTo InstallFailed
         
-        ' check to make sure the twinBASIC folder exists after attempted installation
-        result = fso.FolderExists(tbHelperSettings.twinBASICFolder.Path)
-    
-        'WriteToDebugLogFile("           InstallTwinBasic - end")
-        InstallTwinBasic = result
-    
-        Exit Function
-    
-        ErrorUnZiping:
         InstallTwinBasic = False
-        UpdateActivityLog "Error during InstalltwinBASIC: " & Err.Description
-        MessageBox("Encountered and error attempting to install twinBASIC" & vbLf & Err.Description, "error", "Error Unzipping twinBASIC")
-        'WriteToDebugLogFile "Error: " & Err.Description & " during InstalltwinBASIC"
-    
+        lastInstallError = ""
+        originalMoved = False
+        
+        installPath = StripTrailingSlash(tbHelperSettings.twinBASICFolder.Path)
+        If Len(installPath) < 4 Then
+            lastInstallError = "The twinBASIC folder is not set."
+            UpdateActivityLog lastInstallError
+            Exit Function
+        End If
+        
+        If Not fso.FileExists(tBZipFile) Then
+            lastInstallError = "Zip file was not found: " & tBZipFile
+            UpdateActivityLog lastInstallError
+            Exit Function
+        End If
+        If fso.GetFile(tBZipFile).Size < 100000 Then
+            lastInstallError = "Zip file is incomplete, so the twinBASIC folder was not changed: " & tBZipFile
+            UpdateActivityLog lastInstallError
+            Exit Function
+        End If
+        
+        parentPath = fso.GetParentFolderName(installPath)
+        If Len(parentPath) = 0 Or Not fso.FolderExists(parentPath) Then
+            lastInstallError = "The folder that should contain twinBASIC does not exist: " & parentPath
+            UpdateActivityLog lastInstallError
+            Exit Function
+        End If
+        
+        If Not CanWriteToFolder(parentPath) Then
+            lastInstallError = "tbHelper cannot write to " & parentPath & ". The current twinBASIC folder was not changed. If that folder is under Program Files, run tbHelper as administrator and try again."
+            UpdateActivityLog lastInstallError
+            Exit Function
+        End If
+        
+        folderName = fso.GetFileName(installPath)
+        backupPath = parentPath & "\" & folderName & ".__tbHelper_backup"
+        stagingPath = parentPath & "\" & folderName & ".__tbHelper_new"
+        
+        ' A previous attempt may have moved the live folder aside and then failed
+        ' before putting a new copy in its place. Put that copy back first.
+        If Not fso.FolderExists(installPath) And fso.FolderExists(backupPath) Then
+            UpdateActivityLog "Restoring the previous twinBASIC folder from " & backupPath
+            fso.MoveFolder backupPath, installPath
+        End If
+        
+        DeleteFolderIfExists stagingPath
+        
+        Set zip = New cZipArchive
+        If Not zip.OpenArchive(tBZipFile) Then
+            lastInstallError = "Could not open the zip file. The twinBASIC folder was not changed. " & zip.LastError
+            UpdateActivityLog lastInstallError
+            Exit Function
+        End If
+        
+        UpdateActivityLog "Extracting " & tBZipFile & " to " & stagingPath
+        If Not zip.Extract(stagingPath & "\") Then
+            lastInstallError = "Could not extract the zip. The twinBASIC folder was not changed. " & zip.LastError
+            UpdateActivityLog lastInstallError
+            DeleteFolderIfExists stagingPath
+            Exit Function
+        End If
+        
+        stagedRoot = FolderContainingTwinBasicExe(stagingPath)
+        If Len(stagedRoot) = 0 Then
+            lastInstallError = "The zip did not contain twinBASIC.exe. The current folder was not changed."
+            UpdateActivityLog lastInstallError
+            DeleteFolderIfExists stagingPath
+            Exit Function
+        End If
+        
+        If fso.FolderExists(installPath) Then
+            DeleteFolderIfExists backupPath
+            UpdateActivityLog "Moving the current install aside to " & backupPath
+            fso.MoveFolder installPath, backupPath
+            originalMoved = True
+        End If
+        
+        UpdateActivityLog "Placing the new version in " & installPath
+        If StrComp(stagedRoot, stagingPath, vbTextCompare) = 0 Then
+            fso.MoveFolder stagingPath, installPath
+        Else
+            fso.MoveFolder stagedRoot, installPath
+            DeleteFolderIfExists stagingPath
+        End If
+        
+        If Not fso.FileExists(installPath & "\twinBASIC.exe") Then
+            Err.Raise vbObjectError, "InstallTwinBasic", "twinBASIC.exe was not found after the folder was replaced"
+        End If
+        
+        If originalMoved Then
+            On Error Resume Next
+            fso.DeleteFolder backupPath, True
+            If Err.Number <> 0 Then
+                UpdateActivityLog "The new version is in place. The previous copy is still at " & backupPath
+            End If
+            Err.Clear
+            On Error GoTo InstallFailed
+        End If
+        
+        lastInstallError = ""
+        InstallTwinBasic = True
+        Exit Function
+        
+InstallFailed:
+        If Len(lastInstallError) = 0 Then lastInstallError = "Install failed: " & Err.Description
+        UpdateActivityLog lastInstallError
+        
+        On Error Resume Next
+        If originalMoved And fso.FolderExists(backupPath) Then
+            If fso.FolderExists(installPath) Then
+                If Not fso.FileExists(installPath & "\twinBASIC.exe") Then fso.DeleteFolder installPath, True
+            End If
+            If Not fso.FolderExists(installPath) Then
+                Err.Clear
+                fso.MoveFolder backupPath, installPath
+                If Err.Number = 0 Then
+                    UpdateActivityLog "Restored the previous twinBASIC folder"
+                    lastInstallError = lastInstallError & " The previous twinBASIC folder was restored."
+                Else
+                    UpdateActivityLog "Could not restore the previous folder from " & backupPath & ": " & Err.Description
+                    lastInstallError = lastInstallError & " The previous copy is still at " & backupPath & "."
+                End If
+            Else
+                lastInstallError = lastInstallError & " The previous copy is still at " & backupPath & "."
+            End If
+        End If
+        DeleteFolderIfExists stagingPath
+        InstallTwinBasic = False
+        
     End Function
     
     '******************************************************
@@ -793,6 +930,7 @@ Class Form1
             Case "success": picIcon.Picture = GetImageStd(resSuccess)
             Case "question": picIcon.Picture = GetImageStd(resQuestion)
         End Select
+        picIcon.PictureDpiScaling = True
         ' Select Case LCase$(msgType)
         '     Case "info": picIcon.Picture = LoadPicture(App.Path & "\info.png")
         '     Case "warning": picIcon.Picture = LoadPicture(App.Path & "\warning.png")
@@ -898,16 +1036,11 @@ Class Form1
                 
             Case 3
                 ' ensure the IDE is not running before attempting to unzip the latest version
-                If Not IsCodeRunningInTheIDE Then
-                    Do While IsProcessRunning("twinbasic.exe")
-                        If MessageBox("[font color=vbred]The twinBASIC IDE is running[/font], [b]you can not revert to version " & revertToVersion & " while it is open[/b]." & vbCrLf & _ 
-                        "[font color=blue]Please close the IDE or click cancel to abort.[/font]", "Cancel", "Ok", "Reverting twinBASIC") = "Cancel" Then
-                            UpdateActivityLog "IDE is open - user cancelled", True
-                            FlushRedraws()
-                            ProcessDownloadedZip = False
-                            Exit Function
-                        End If
-                    Loop
+                If Not WaitUntilTwinBasicIsClosed("update") Then
+                    UpdateActivityLog "IDE is open - user cancelled", True
+                    FlushRedraws()
+                    ProcessDownloadedZip = False
+                    Exit Function
                 End If
                 
                 UpdateActivityLog " of installing twinBASIC", True
@@ -932,17 +1065,21 @@ Class Form1
                 Else
                     UpdateActivityLog "twinBASIC from " & tBZipFile & " could not be extracted to " & tbHelperSettings.twinBASICFolder.Path & " error"
                     Me.MousePointer = vbDefault
-                    MessageBox("There was a problem installing twinBASIC in " & tbHelperSettings.twinBASICFolder.Path & ". The parent folder and the zip file will be opened so that you can finish the process.", "error", "Unable to complete")
-                
-                    ' wait for the message to be dismissed
-                    Do While isAPanelDisplayed
-                        DoEvents()
-                    Loop
                     
-                    ShellExecute(0, "open", tBZipFile, vbNullString, vbNullString, 1) ' open the zipfile for the user
-                    ShellExecute(0, "open", GettBParentFolder, vbNullString, vbNullString, 1) ' open the folder where twinBASIC is supposed to be installed.
-                
-                    'MessageBox("Going forward, you can open this utility as administrator to avoid this extra step.", "info", "Application Folder Rights")
+                    Dim installPath As String
+                    installPath = StripTrailingSlash(tbHelperSettings.twinBASICFolder.Path)
+                    If fso.FileExists(installPath & "\twinBASIC.exe") Then
+                        MessageBox(PlainMessage(lastInstallError), "error", "Unable to complete")
+                    Else
+                        MessageBox(PlainMessage(lastInstallError) & " The parent folder and the zip file will be opened so you can finish the process.", "error", "Unable to complete")
+                        Do While isAPanelDisplayed
+                            DoEvents()
+                        Loop
+                        ShellExecute(0, "open", tBZipFile, vbNullString, vbNullString, 1)
+                        ShellExecute(0, "open", fso.GetParentFolderName(installPath), vbNullString, vbNullString, 1)
+                    End If
+                    ProcessDownloadedZip = False
+                    Exit Function
                 End If
                 
         End Select
@@ -1693,18 +1830,12 @@ Class Form1
         Me.MousePointer = vbHourglass
         
         ' check that the IDE is closed before attempting to revert
-        If Not IsCodeRunningInTheIDE Then
-            If IsProcessRunning("twinbasic.exe") Then UpdateActivityLog "Not allowed while the IDE is open"
-            Do While IsProcessRunning("twinbasic.exe")
-                
-                If MessageBox("[font color=vbred]The twinBASIC IDE is running[/font], [b]you can not revert to version " & revertToVersion & " while it is open[/b]." & vbCrLf & _ 
-                    "[font color=blue]Please close the IDE or click cancel to abort.[/font]", "Cancel", "Ok", "Reverting twinBASIC") = "Cancel" Then
-                    UpdateActivityLog "Revert cancelled"
-                    Me.MousePointer = vbDefault
-                    FlushRedraws()
-                    Exit Sub
-                End If
-            Loop
+        If IsProcessRunning("twinbasic.exe") Then UpdateActivityLog "Not allowed while the IDE is open"
+        If Not WaitUntilTwinBasicIsClosed("revert") Then
+            UpdateActivityLog "Revert cancelled"
+            Me.MousePointer = vbDefault
+            FlushRedraws()
+            Exit Sub
         End If
         
         UpdateActivityLog "Selected to revert from version " & tbHelperSettings.twinBASICFolder.tBVersion & " to " & revertToVersion
@@ -1712,8 +1843,10 @@ Class Form1
         ' revert the version in the twinBASIC location
         Dim revertToZipFileName As String
         
-        revertToZipFileName = tbHelperSettings.DownloadFolder.Path & "\" & ZipPicker.Item
-        revertToZipFileName = Replace(revertToZipFileName, "[local]", "")
+        Dim revertDownloadFolder As String
+        revertDownloadFolder = tbHelperSettings.DownloadFolder.Path
+        If Len(revertDownloadFolder) > 0 And Right$(revertDownloadFolder, 1) <> "\" Then revertDownloadFolder = revertDownloadFolder & "\"
+        revertToZipFileName = revertDownloadFolder & Replace(ZipPicker.Item, "[local]", "")
         
         If revertToVersionRequiresDownload Then
         
@@ -1721,13 +1854,23 @@ Class Form1
             Dim revertToURL As String = githubReleasesURL & "/download/beta-x-" & IIf(revertToVersion < 1000, "0" & CStr(revertToVersion), revertToVersion)
             
             UpdateActivityLog "Revert requires downloading twinBASIC " & revertToVersion
-            URLDownloadToFile 0, revertToURL & "/" & ZipPicker.Item, revertToZipFileName, 0, 0
+            If Not DownloadUrlToFile(revertToURL & "/" & ZipPicker.Item, revertToZipFileName) Then
+                UpdateActivityLog "Download failed. twinBASIC was not changed."
+                Me.MousePointer = vbDefault
+                MessageBox("The download did not finish, so the twinBASIC folder was not changed.", "error", "Download failed")
+                Exit Sub
+            End If
             UpdateActivityLog "done ", True
                 
         End If
         
         UpdateActivityLog "Expanding twinBASIC " & revertToVersion
-        InstallTwinBasic(revertToZipFileName)
+        If Not InstallTwinBasic(revertToZipFileName) Then
+            UpdateActivityLog "Revert failed"
+            Me.MousePointer = vbDefault
+            MessageBox(PlainMessage(lastInstallError), "error", "Revert Result")
+            Exit Sub
+        End If
         UpdateActivityLog "done", True
         
         ' update the form to indicate that the version was reverted to an older version
@@ -1991,23 +2134,9 @@ Class Form1
     
     Private Sub CalculateDPIValues()
         
-        Dim hdc As Long
-        Dim dpiX As Long
-        Dim dpiY As Long
-
-        ' Get the device context (DC) for the screen
-        hdc = GetDC(0)
-
-        ' Get the horizontal and vertical DPI values
-        dpiX = GetDeviceCaps(hdc, LOGPIXELSX)
-        dpiY = GetDeviceCaps(hdc, LOGPIXELSY)
-
-        ' Release the device context
-        ReleaseDC 0, hdc
-
-        ' Example for scaling controls (assuming 96 DPI as baseline)
-        drop_DPIFontSize = TEXT_BASE_FONT_SIZE * (dpiX / BASE_DPI)
-        If drop_DPIFontSize > MAX_FONT_SIZE Then drop_DPIFontSize = MAX_FONT_SIZE
+        ' Font.Size is in points, which Windows already scales for the monitor.
+        ' Multiplying the point size by the DPI factor makes the text too large.
+        drop_DPIFontSize = TEXT_BASE_FONT_SIZE
 
     End Sub
 

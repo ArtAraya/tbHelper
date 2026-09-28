@@ -31,7 +31,6 @@ Class ucActivityLog
     Private m_SelectedIndex As Long
     Private m_ScrollOffset As Long
 
-    Private m_DPI_Horizontal As Long
     Private m_DPI_Vertical As Long
     Private m_DPIFontSize As Integer
     Private m_DPIRowHeight As Integer
@@ -74,34 +73,20 @@ Class ucActivityLog
     End Property
     
     Private Sub CalculateDPIValues()
-        Dim hdc As Long
-        Dim scaleFactor As Single
 
-        ' Get the device context (DC) for the screen
-        hdc = GetDC(0)
-
-        ' Get the horizontal and vertical DPI values
-        m_DPI_Horizontal = GetDeviceCaps(hdc, LOGPIXELSX)
-        m_DPI_Vertical = GetDeviceCaps(hdc, LOGPIXELSY)
-
-        ' Release the device context
-        ReleaseDC 0, hdc
-
-        Select Case m_DPI_Horizontal
-            Case Is < 120: m_DPIFontSize = 10
-            Case 120 To 144: m_DPIFontSize = 11
-            Case 145 To 192: m_DPIFontSize = 12
-            Case Else: m_DPIFontSize = 13
-        End Select
-        
-        ' adding a calculation for the row height and removing the ROW_HEIGHT constant - thanks for AARays on VBForums
+        ' Point size stays constant. Row height is in pixels and must grow with DPI.
+        m_DPI_Vertical = CLng(GetDPIScale() * 96)
+        If m_DPI_Vertical < 96 Then m_DPI_Vertical = 96
+        m_DPIFontSize = TEXT_BASE_FONT_SIZE
         m_DPIRowHeight = MulDiv(40, m_DPI_Vertical, 96)
-        
-        ' Optional: log for visibility
-        'Debug.Print "DPI_X=" & dpiX & ", Font scale=" & Format(scaleFactor, "0.00") & ", Font size=" & m_DPIFontSize
-        'Debug.Print "DPI_Y=" & dpiY & ", Row Height=" & m_DPIRowHeight
+        If m_DPIRowHeight < 1 Then m_DPIRowHeight = 1
         
     End Sub
+
+    Private Function Px(ByVal designPixels As Long) As Long
+        Px = MulDiv(designPixels, m_DPI_Vertical, 96)
+        If Px < 1 And designPixels > 0 Then Px = 1
+    End Function
     
     Private Sub UserControl_Initialize()
     
@@ -176,8 +161,8 @@ Class ucActivityLog
         m_Canvas.Cls
         m_Canvas.BackColor = BACKGROUND_COLOR
         
-        ' Convert canvas height to pixels FIRST
-        canvasHeightPixels = m_Canvas.Height \ Screen.TwipsPerPixelY
+        ' ScaleHeight is already in pixels (canvas ScaleMode is vbPixels).
+        canvasHeightPixels = m_Canvas.ScaleHeight
         
         ' Now calculate how many full rows fit, plus 1 if there's partial space left
         visibleEntries = canvasHeightPixels \ m_DPIRowHeight  'ROW_HEIGHT
@@ -231,7 +216,7 @@ Class ucActivityLog
         ' Set up row rectangle
         rowRect.Left = 0
         rowRect.Top = yPos
-        rowRect.Right = m_Canvas.Width
+        rowRect.Right = m_Canvas.ScaleWidth
         rowRect.Bottom = yPos + m_DPIRowHeight 'ROW_HEIGHT
     
         ' Draw row background
@@ -250,14 +235,13 @@ Class ucActivityLog
         Call GetTextExtentPoint32(hdc, entry.DateTime, Len(entry.DateTime), sz)
         
         ' Draw log message, aligned just after timestamp + gap
-        Const GAP As Long = 6
         Dim msgX As Long
-        msgX = 20 + sz.cx + GAP ' 20 is starting X for timestamp
+        msgX = Px(20) + sz.cx + Px(6)
                 
         ' Draw date/time number (blue)
         SetBkMode hdc, 1 ' TRANSPARENT
         SetTextColor hdc, TEXT_COLOR_VERSION
-        TextOut hdc, 20, yPos + 12, entry.DateTime, Len(entry.DateTime)
+        TextOut hdc, Px(20), yPos + Px(12), entry.DateTime, Len(entry.DateTime)
     
         ' Draw description - if it contains the word error then draw it crimsson
         If InStr(UCase(entry.LogMessage), "ERROR") > 0 Then
@@ -266,7 +250,7 @@ Class ucActivityLog
             SetTextColor hdc, TEXT_COLOR_DARK
         End If
         
-        TextOut hdc, msgX, yPos + 12, entry.LogMessage, Len(entry.LogMessage)
+        TextOut hdc, msgX, yPos + Px(12), entry.LogMessage, Len(entry.LogMessage)
     End Sub
 
     Private Sub m_Canvas_MouseDown(Button As Integer, Shift As Integer, x As Single, y As Single)
@@ -312,7 +296,7 @@ Class ucActivityLog
             entryIndex = m_EntryCount - 1
             Dim yPos As Long
             yPos = (entryIndex - m_ScrollOffset) * m_DPIRowHeight 'ROW_HEIGHT
-            If yPos >= 0 And yPos < m_Canvas.Height Then
+            If yPos >= 0 And yPos < m_Canvas.ScaleHeight Then
                 DrawRow entryIndex, yPos
 
                 ' Optional: redraw the next row in case overlap occurred
@@ -337,7 +321,7 @@ Class ucActivityLog
 
             ' how many entries can be shown 
             Dim canvasHeightPixels As Long
-            canvasHeightPixels = m_Canvas.Height \ Screen.TwipsPerPixelY
+            canvasHeightPixels = m_Canvas.ScaleHeight
             
             Dim visibleEntries As Long
             visibleEntries = canvasHeightPixels \ m_DPIRowHeight 'ROW_HEIGHT
@@ -377,7 +361,10 @@ Class ucActivityLog
         filteredCount = m_EntryCount
         
         ' check to see if the scrollbar is needed, if so convert the pixel row height to twips to calculate that
-        If Not m_Canvas Is Nothing Then visibleRows = Int(m_Canvas.Height / (m_DPIRowHeight * Screen.TwipsPerPixelX))
+        If Not m_Canvas Is Nothing Then
+            visibleRows = Int(m_Canvas.ScaleHeight / m_DPIRowHeight)
+            If visibleRows < 1 Then visibleRows = 1
+        End If
             
         If filteredCount > visibleRows Then
             m_VScrollBar.Max = filteredCount - visibleRows
