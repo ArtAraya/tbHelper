@@ -73,7 +73,12 @@ Public Sub ApplyRoundedRegion(toWhichControl As Control, borderRadius As Long)
     
     Dim w As Long: w = ctrlWidth \ Screen.TwipsPerPixelX
     Dim h As Long: h = ctrlHeight \ Screen.TwipsPerPixelY
-    Dim r As Long: r = borderRadius
+    ' borderRadius is specified in 96-DPI pixels. The region itself is in
+    ' physical pixels, so grow the corner with the same scale as the window.
+    Dim r As Long: r = CLng(borderRadius * GetDPIScale())
+    If r < 1 Then r = 1
+    If (r * 2) > w And w > 1 Then r = w \ 2
+    If (r * 2) > h And h > 1 Then r = h \ 2
         
     Dim rgn As Long
     rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2)

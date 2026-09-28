@@ -91,7 +91,9 @@ Class ucRoundedTextbox
         ' Convert from twips to pixels
         Dim w As Long: w = Width \ Screen.TwipsPerPixelX
         Dim h As Long: h = Height \ Screen.TwipsPerPixelY
-        Dim r As Long: r = m_BorderRadius
+        Dim r As Long: r = CLng(m_BorderRadius * GetDPIScale())
+        If r < 1 Then r = 1
+        If (r * 2) > h And h > 1 Then r = h \ 2
     
         ' Create the rounded rectangle region
         Dim rgn As Long

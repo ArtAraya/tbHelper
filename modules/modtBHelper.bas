@@ -49,7 +49,8 @@ Public Sub ConfigureCustomButton(theButton As ucCustomButton, buttonCaption As S
             .BorderWidth = borderWidth
         End If
         .FontSize = 11
-        .BorderRadius = 3 * dpiScale
+        ' Radius is in 96-DPI pixels. ApplyRoundedRegion scales it for the current DPI.
+        .BorderRadius = 3
         .FontBold = boldFont
         '.PngIconPath = pngImagePath
         .ButtonImagePtr = GetImagePtr(resID)
@@ -170,6 +171,136 @@ Public Function GettBParentFolder() As String
     ' truncate the value in the textbox holding the install folder, to get the parent folder
     GettBParentFolder = Left(tbHelperSettings.twinBASICFolder.Path, idx)
         
+End Function
+
+Public Function StripTrailingSlash(ByVal folderPath As String) As String
+
+    Do While Len(folderPath) > 3 And Right$(folderPath, 1) = "\"
+        folderPath = Left$(folderPath, Len(folderPath) - 1)
+    Loop
+    StripTrailingSlash = folderPath
+
+End Function
+
+Public Sub DeleteFolderIfExists(ByVal folderPath As String)
+
+    On Error Resume Next
+    If Len(folderPath) = 0 Then Exit Sub
+    If fso.FolderExists(folderPath) Then fso.DeleteFolder folderPath, True
+
+End Sub
+
+' Returns False when the process cannot really create files in folderPath.
+' A successful write that lands in VirtualStore (non-elevated access to
+' Program Files) is treated as a failure so the caller does not replace a
+' real install with files the user will never see in that folder.
+Public Function CanWriteToFolder(ByVal folderPath As String) As Boolean
+
+    Dim testName As String
+    Dim testPath As String
+    Dim ts As TextStream
+    Dim slashPos As Long
+    Dim relativePath As String
+    Dim virtualPath As String
+
+    On Error GoTo Failed
+
+    CanWriteToFolder = False
+    folderPath = StripTrailingSlash(folderPath)
+    If Len(folderPath) = 0 Then Exit Function
+    If Not fso.FolderExists(folderPath) Then Exit Function
+
+    testName = "tbHelper_write_test.tmp"
+    testPath = folderPath & "\" & testName
+    slashPos = InStr(folderPath, "\")
+    If slashPos > 0 And Len(Environ$("LOCALAPPDATA")) > 0 Then
+        relativePath = Mid$(folderPath, slashPos + 1)
+        virtualPath = Environ$("LOCALAPPDATA") & "\VirtualStore\" & relativePath & "\" & testName
+        If fso.FileExists(virtualPath) Then fso.DeleteFile virtualPath, True
+    End If
+    If fso.FileExists(testPath) Then fso.DeleteFile testPath, True
+
+    Set ts = fso.CreateTextFile(testPath, True)
+    ts.Write "ok"
+    ts.Close
+    Set ts = Nothing
+
+    slashPos = InStr(folderPath, "\")
+    If slashPos > 0 And Len(Environ$("LOCALAPPDATA")) > 0 Then
+        relativePath = Mid$(folderPath, slashPos + 1)
+        virtualPath = Environ$("LOCALAPPDATA") & "\VirtualStore\" & relativePath & "\" & testName
+        If fso.FileExists(virtualPath) Then
+            On Error Resume Next
+            fso.DeleteFile virtualPath, True
+            fso.DeleteFile testPath, True
+            Exit Function
+        End If
+    End If
+
+    fso.DeleteFile testPath, True
+    CanWriteToFolder = True
+    Exit Function
+
+Failed:
+    On Error Resume Next
+    If Not ts Is Nothing Then ts.Close
+    If Len(testPath) > 0 Then
+        If fso.FileExists(testPath) Then fso.DeleteFile testPath, True
+    End If
+    CanWriteToFolder = False
+
+End Function
+
+Public Function FolderContainingTwinBasicExe(ByVal folderPath As String) As String
+
+    Dim subFolder As Folder
+
+    folderPath = StripTrailingSlash(folderPath)
+    If fso.FileExists(folderPath & "\twinBASIC.exe") Then
+        FolderContainingTwinBasicExe = folderPath
+        Exit Function
+    End If
+
+    On Error GoTo Done
+    For Each subFolder In fso.GetFolder(folderPath).SubFolders
+        If fso.FileExists(subFolder.Path & "\twinBASIC.exe") Then
+            FolderContainingTwinBasicExe = subFolder.Path
+            Exit Function
+        End If
+    Next
+
+Done:
+
+End Function
+
+' URLDownloadToFile returns 0 on success. A non-zero result, a missing file,
+' or a tiny file (GitHub error page saved as a zip) is a failed download.
+Public Function DownloadUrlToFile(ByVal sourceUrl As String, ByVal destFile As String) As Boolean
+
+    Dim result As Long
+    Dim folderPath As String
+
+    On Error GoTo Failed
+
+    DownloadUrlToFile = False
+    folderPath = fso.GetParentFolderName(destFile)
+    If Len(folderPath) = 0 Or Not fso.FolderExists(folderPath) Then Exit Function
+
+    result = URLDownloadToFile(0, sourceUrl, destFile, 0, 0)
+    If result <> 0 Then GoTo Failed
+    If Not fso.FileExists(destFile) Then Exit Function
+    If fso.GetFile(destFile).Size < 100000 Then GoTo Failed
+
+    DownloadUrlToFile = True
+    Exit Function
+
+Failed:
+    On Error Resume Next
+    If fso.FileExists(destFile) Then
+        If fso.GetFile(destFile).Size < 100000 Then fso.DeleteFile destFile, True
+    End If
+    DownloadUrlToFile = False
+
 End Function
 
 Public Function IsCodeRunningInTheIDE() As Boolean
@@ -446,38 +577,45 @@ End Function
 Private Const BASE_DPI As Long = 96
 
 Public Function GetDPIScale() As Double
-    ' code given by AARays on VBForums 
-    ' I'm using the declarations in WinDevLib for the API calls referenced here (at first)
-    ' Returns the system DPI scaling factor (e.g., 1.5 for 150% scaling)
-    
+    ' Returns the scaling factor that matches the coordinate system the form
+    ' is actually using (1.0 at 96 DPI / DPI-unaware, 1.5 at 150%, and so on).
+    ' Screen.TwipsPerPixel stays 15 when Windows is bitmap-stretching a
+    ' DPI-unaware process, so this does not scale twice in that case.
+    ' Device caps are only used when twips still report 96 DPI.
+
     #If VBA7 Then
         Dim hDC As LongPtr
     #Else
         Dim hDC As Long
     #End If
     Dim CurrentDPI As Long
-    Dim ScaleFactor As Double
+    Dim fromTwips As Double
+    Dim fromCaps As Double
 
-    ' 1. Get the Device Context (DC) for the desktop window (hWnd=0)
-    hDC = GetDC(0)
-
-    If hDC <> 0 Then
-        ' 2. Retrieve the current DPI value (e.g., 144 DPI for 150% scaling)
-        CurrentDPI = GetDeviceCaps(hDC, LOGPIXELSX)
-
-        ' 3. Release the Device Context (essential cleanup)
-        Call ReleaseDC(0, hDC)
-
-        ' 4. Calculate the fractional scale factor using floating-point division
-        If CurrentDPI > 0 Then
-            ScaleFactor = CDbl(CurrentDPI) / BASE_DPI
-            GetDPIScale = ScaleFactor
-        Else
-            GetDPIScale = 1.0 ' Default to 1.0 (100%) if DPI failed to retrieve
-        End If
+    If Screen.TwipsPerPixelX > 0 Then
+        fromTwips = 15# / CDbl(Screen.TwipsPerPixelX)
     Else
-        ' Failed to get DC
-        GetDPIScale = 1.0
+        fromTwips = 1#
     End If
-    
+
+    hDC = GetDC(0)
+    If hDC <> 0 Then
+        CurrentDPI = GetDeviceCaps(hDC, LOGPIXELSX)
+        Call ReleaseDC(0, hDC)
+    End If
+
+    If CurrentDPI > 0 Then
+        fromCaps = CDbl(CurrentDPI) / BASE_DPI
+    Else
+        fromCaps = 1#
+    End If
+
+    If fromTwips > 1.01 Then
+        GetDPIScale = fromTwips
+    ElseIf fromCaps > 1.01 Then
+        GetDPIScale = fromCaps
+    Else
+        GetDPIScale = 1#
+    End If
+
 End Function

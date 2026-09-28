@@ -13,6 +13,11 @@ Public Sub ApplyRoundedCorners(ctl As Object, ByVal RadiusX As Long, ByVal Radiu
     
     ' clientRect.Right IS the width in pixels.
     ' clientRect.Bottom IS the height in pixels.
+    ' Radius arguments are 96-DPI pixels.
+    RadiusX = CLng(RadiusX * GetDPIScale())
+    RadiusY = CLng(RadiusY * GetDPIScale())
+    If RadiusX < 1 Then RadiusX = 1
+    If RadiusY < 1 Then RadiusY = 1
     hRgn = CreateRoundRectRgn(0, 0, clientRect.Right, clientRect.Bottom, RadiusX, RadiusY)
     
     SetWindowRgn ctl.hWnd, hRgn, True
@@ -37,6 +42,11 @@ Public Sub ApplyBottomRoundedCorners(ctl As Object, ByVal RadiusX As Long, ByVal
     Dim PxHeight As Long
     PxWidth = clientRect.Right   ' For a client rect, Right IS the width
     PxHeight = clientRect.Bottom ' and Bottom IS the height
+
+    RadiusX = CLng(RadiusX * GetDPIScale())
+    RadiusY = CLng(RadiusY * GetDPIScale())
+    If RadiusX < 1 Then RadiusX = 1
+    If RadiusY < 1 Then RadiusY = 1
     
     ' YOUR BRILLIANT IDEA: If the control has a scrollbar, add its width back
     ' to the region's total width to avoid clipping it.

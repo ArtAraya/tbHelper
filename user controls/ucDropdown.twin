@@ -19,8 +19,6 @@ Class ucDropdown
     Private m_DPI_Vertical As Long
     Private m_DPIFontSize As Integer
     Private Const TEXT_BASE_FONT_SIZE = 9.75
-
-    Private Const MAX_FONT_SIZE As Long = 13
     Private Const BASE_DPI = 96
     
     Const PADDING_RAW As Long = 5
@@ -51,27 +49,12 @@ Class ucDropdown
 
     Private Sub CalculateDPIValues()
         
-        Dim hdc As Long
-        Dim dpiX As Long
-        Dim dpiY As Long
+        m_DPI_Horizontal = CLng(GetDPIScale() * BASE_DPI)
+        If m_DPI_Horizontal < BASE_DPI Then m_DPI_Horizontal = BASE_DPI
+        m_DPI_Vertical = m_DPI_Horizontal
 
-        ' Get the device context (DC) for the screen
-        hdc = GetDC(0)
-
-        ' Get the horizontal and vertical DPI values
-        dpiX = GetDeviceCaps(hdc, LOGPIXELSX)
-        dpiY = GetDeviceCaps(hdc, LOGPIXELSY)
-
-        ' Release the device context
-        ReleaseDC 0, hdc
-
-        ' Display the DPI values
-        m_DPI_Horizontal = dpiX
-        m_DPI_Vertical = dpiY
-
-        ' Example for scaling controls (assuming 96 DPI as baseline)
-        m_DPIFontSize = TEXT_BASE_FONT_SIZE * (dpiX / BASE_DPI)
-        If m_DPIFontSize > MAX_FONT_SIZE Then m_DPIFontSize = MAX_FONT_SIZE
+        ' Keep the point size stable. Padding and icons below are scaled in pixels.
+        m_DPIFontSize = TEXT_BASE_FONT_SIZE
 
     End Sub
     
