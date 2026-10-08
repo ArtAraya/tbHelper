@@ -141,37 +141,14 @@ errorHandler:
     End If
 End Sub
 
-' Startup runs before Form_Load creates fso, so this log uses Open/Print and never raises.
+' Steps stay in memory. startup_log.txt is written only after a startup error.
+Private m_StartupLines As String
+Private m_StartupLogged As Boolean
+
 Public Sub StartupTrace(ByVal stepName As String)
-    Dim fn As Integer
-    Dim logPath As String
-    Static sessionStarted As Boolean
-    
     On Error Resume Next
-    logPath = App.Path & "\startup_log.txt"
-    
-    If Not sessionStarted Then
-        fn = FreeFile
-        Open logPath For Output As #fn
-        If Err.Number = 0 Then
-            Print #fn, Format(Now, "yyyy-mm-dd hh:nn:ss"); " startup path="; App.Path
-            Close #fn
-            sessionStarted = True
-        Else
-            Close #fn
-            Err.Clear
-            Exit Sub
-        End If
-    End If
-    
-    fn = FreeFile
-    Open logPath For Append As #fn
-    If Err.Number = 0 Then
-        Print #fn, Format(Now, "hh:nn:ss"); " "; stepName
-        Close #fn
-    Else
-        Close #fn
-    End If
+    If Len(m_StartupLines) > 0 Then m_StartupLines = m_StartupLines & vbCrLf
+    m_StartupLines = m_StartupLines & Format(Now, "hh:nn:ss") & " " & stepName
     Err.Clear
 End Sub
 
@@ -185,12 +162,10 @@ Public Sub StartupTraceError(ByVal stepName As String)
     d = Err.Description
     Err.Clear
     
-    If n = 0 Then
-        StartupTrace stepName & " (no error number)"
-        Exit Sub
-    End If
+    If n = 0 Then Exit Sub
     
     StartupTrace stepName & " ERROR " & CStr(n) & ": " & d
+    WriteStartupLog
     
     If announced Then Exit Sub
     If IsCodeRunningInTheIDE() Then Exit Sub
@@ -199,6 +174,37 @@ Public Sub StartupTraceError(ByVal stepName As String)
     msg = msg & "Error " & CStr(n) & ": " & d & vbCrLf & vbCrLf
     msg = msg & "Details were written to:" & vbCrLf & App.Path & "\startup_log.txt"
     MsgBox msg, vbExclamation, "tBHelper"
+End Sub
+
+' Call after startup finishes with no error so an older failure log is not left behind.
+Public Sub StartupTraceSucceeded()
+    Dim logPath As String
+    
+    On Error Resume Next
+    If m_StartupLogged Then Exit Sub
+    logPath = App.Path & "\startup_log.txt"
+    If Dir(logPath) <> "" Then Kill logPath
+    Err.Clear
+End Sub
+
+Private Sub WriteStartupLog()
+    Dim fn As Integer
+    Dim logPath As String
+    
+    On Error Resume Next
+    logPath = App.Path & "\startup_log.txt"
+    fn = FreeFile
+    Open logPath For Output As #fn
+    If Err.Number <> 0 Then
+        Close #fn
+        Err.Clear
+        Exit Sub
+    End If
+    Print #fn, Format(Now, "yyyy-mm-dd hh:nn:ss"); " startup path="; App.Path
+    Print #fn, m_StartupLines
+    Close #fn
+    m_StartupLogged = True
+    Err.Clear
 End Sub
 
 Public Function PixelsToTwips(pixels As Long) As Long
