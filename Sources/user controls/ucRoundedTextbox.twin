@@ -1,0 +1,148 @@
+[Description("")]
+[FormDesignerId("99FB4DD2-4D17-47E2-BDD1-F6E14C00B5F0")]
+[ClassId("A938451B-4E4E-4A0F-B633-3BEF0BCDFD1E")]
+[InterfaceId("BEDB4B1B-CA6A-4BC3-B7DB-2D7DBD690A24")]
+[EventInterfaceId("1D5A78D5-5D9A-40FB-9AE1-CC64E2DC5C2B")]
+[COMControl]
+Class ucRoundedTextbox
+
+	Sub New()
+	End Sub
+    
+    Private Const FolderErrorColor As OLE_COLOR = rgb(255, 255, 224)
+    
+    Private m_BackColor As OLE_COLOR
+    Private m_BorderColor As OLE_COLOR
+    Private m_BorderRadius As Long
+    Private m_BorderWidth As Long
+    Private m_IsValidView As Boolean
+    
+    Private hWnd As LongPtr
+    
+    Public Property Get IsViewValid() As Boolean
+        IsViewValid = m_IsValidView
+    End Property
+    
+    Public Property Let BackColor(ByVal value As OLE_COLOR)
+        m_BackColor = value
+        txtInput.BackColor = m_BackColor
+    End Property
+    
+    Public Property Get BackColor() As OLE_COLOR
+        BackColor = m_BackColor
+    End Property
+    
+    Public Property Let BorderColor(ByVal Value As OLE_COLOR)
+        m_BorderColor = Value
+        ApplyRoundedRegion
+    End Property
+
+    Public Property Let BorderRadius(ByVal Value As Long)
+        m_BorderRadius = Value
+        ApplyRoundedRegion
+    End Property
+
+    Public Property Let BorderWidth(ByVal Value As Long)
+        m_BorderWidth = Value
+        ApplyRoundedRegion
+    End Property
+    
+    Public Property Get Text() As String
+        Text = txtInput.Text
+    End Property
+
+    Public Property Let Text(ByVal Value As String)
+        txtInput.Text = Value
+    End Property
+
+    Public Property Get Font() As StdFont
+        Set Font = txtInput.Font
+    End Property
+
+    Public Property Set Font(ByVal Value As StdFont)
+        Set txtInput.Font = Value
+    End Property
+    
+    Public Sub SetValidView(isValid As Boolean, OptionalToolTipMessage As String = "")
+        
+        ' color the control to indicate that something is wrong
+        
+        m_IsValidView = isValid
+        
+        'WriteToDebugLogFile("roundedtextbox - SetValidView to " & isValid)
+        If Not isValid Then
+            txtInput.BackColor = FolderErrorColor
+            UserControl.BackColor = FolderErrorColor
+            txtInput.ToolTipText = OptionalToolTipMessage
+        Else
+            txtInput.BackColor = vbWhite
+            UserControl.BackColor = vbWhite
+            txtInput.ToolTipText = ""
+        End If
+        QueueRedraw(hWnd)
+        
+    End Sub
+    
+    Private Sub ApplyRoundedRegion()
+        
+        If Width <= 0 Or Height <= 0 Then Exit Sub
+    
+        Dim w As Long, h As Long
+        GetClientSizePx UserControl.hWnd, w, h
+        Dim r As Long: r = ScaleDesignPx(m_BorderRadius)
+    
+        ' Create the rounded rectangle region
+        Dim rgn As Long
+        rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2)
+    
+        If rgn <> 0 Then
+            ' Apply the region to clip the control
+            SetWindowRgn UserControl.hWnd, rgn, True
+            ' Note: Don't delete the region object here - Windows takes ownership
+        End If
+        
+        QueueRedraw(hWnd)
+    End Sub
+    
+    Private Sub UserControl_Initialize()
+        On Error GoTo InitFailed
+        StartupTrace "ucRoundedTextbox.Initialize enter"
+        
+        m_BackColor = &HFFFFFF
+        m_BorderColor = &HCCCCCC
+        m_BorderRadius = 6
+        m_BorderWidth = 1
+        
+        hWnd = UserControl.hWnd
+        
+        ApplyRoundedRegion
+        
+        ucDictionary.Add Me.hWnd, Me
+        StartupTrace "ucRoundedTextbox.Initialize leave"
+        Exit Sub
+InitFailed:
+        StartupTraceError "ucRoundedTextbox.Initialize"
+    End Sub
+    
+    Private Sub UserControl_Resize()
+        
+        Const padding As Long = 120
+        txtInput.Move padding, padding \ 2, ScaleWidth - (padding * 2), ScaleHeight - padding
+        
+        ApplyRoundedRegion
+        
+        'Refresh
+        
+    End Sub
+    
+    Private Sub UserControl_Show()
+        On Error GoTo ShowFailed
+        StartupTrace "ucRoundedTextbox.Show enter"
+        ApplyRoundedRegion
+        StartupTrace "ucRoundedTextbox.Show leave"
+        Exit Sub
+ShowFailed:
+        StartupTraceError "ucRoundedTextbox.Show"
+    End Sub
+    
+End Class

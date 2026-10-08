@@ -1,0 +1,396 @@
+[Description("")]
+[FormDesignerId("67E322D1-B2B3-4868-B6F7-C47BFD03707E")]
+[ClassId("D841E509-2395-43B1-9CF1-3A3E66ECF274")]
+[InterfaceId("7B07F271-C9D3-4841-BEF3-98A951F14E4F")]
+[EventInterfaceId("36280A39-F17E-4172-86CE-7750EB1449A0")]
+[COMControl]
+Class ucRTFMessage
+
+	Sub New()
+	End Sub
+
+    ' Simple GDI based text area that allows for simple HTML style font styling
+    ' currently supports [b] [i] [font family, size, color] with their closing tags
+    ' color supported are strictly the color constants
+    Type StyledSegment
+        Text As String
+        FontName As String
+        FontSize As Long
+        Color As Long
+        Bold As Boolean
+        Italic As Boolean
+        Underline As Boolean
+    End Type
+
+    Private canvashWnd As LongPtr
+    
+    Private m_RequiredWidth As Long
+    Private m_RequiredHeight As Long
+    Private m_Message As String
+    Private m_BackColor As OLE_COLOR     ' to be introduced after main functions are working
+    Private m_StyleSegment As StyledSegment
+    
+    Private m_DPIFontSize As Integer
+    Private m_DPI_Horizontal As Long
+    Private m_DPI_Vertical As Long
+    Private m_DPIRowHeight As Integer
+    
+    Private Const ROW_HEIGHT = 40
+    Private Const GWL_WNDPROC As Long = -4
+    Private Const BASE_DPI = 96
+    
+    Const FW_NORMAL = 400
+    Const FW_BOLD = 700
+    Const DEFAULT_CHARSET = 1
+    Const OUT_DEFAULT_PRECIS = 0
+    Const CLIP_DEFAULT_PRECIS = 0
+    Const DEFAULT_QUALITY = 0
+    Const DEFAULT_PITCH = 0
+    Const FF_DONTCARE = 0
+    Const DEF_FONT_SIZE = 12.75
+    Const MAX_FONT_SIZE As Long = 13
+        
+    Private WithEvents m_Canvas As PictureBox
+    
+    Public Sub Clear()
+        m_Canvas.Cls()
+    End Sub
+        
+    Public Property Let Message(value As String)
+        m_Canvas.Cls
+        m_Message = value
+        DrawMessage
+    End Property
+    
+    Public Property Get Message() As String
+        Message = m_Message
+    End Property
+    
+    Public Property Get RequiredWidth() As Long
+        RequiredWidth = m_RequiredWidth
+    End Property
+
+    Public Property Get RequiredHeight() As Long
+        RequiredHeight = m_RequiredHeight
+    End Property
+    
+    Public Property Let BackColor(value As OLE_COLOR)
+        m_BackColor = value
+        'm_Canvas.Refresh()
+        DrawMessage
+    End Property
+    
+    Public Property Get BackColor() As OLE_COLOR
+        BackColor = m_BackColor
+    End Property
+    
+    Private Sub UserControl_Initialize()
+        On Error GoTo InitFailed
+        StartupTrace "ucRTFMessage.Initialize enter"
+        
+        UserControl.ScaleMode = vbPixels
+        
+        ' Get the horizontal and vertical DPI values
+        m_DPI_Horizontal = GetDeviceCaps(hDC, LOGPIXELSX)
+        m_DPI_Vertical = GetDeviceCaps(hDC, LOGPIXELSY)
+
+        m_BackColor = RGB(240, 240, 240)
+        m_DPIFontSize = DEF_FONT_SIZE * (m_DPI_Horizontal / BASE_DPI)
+        If m_DPIFontSize > MAX_FONT_SIZE Then m_DPIFontSize = MAX_FONT_SIZE
+        
+        ' Create canvas for the change log items
+        Set m_Canvas = Controls.Add("VB.PictureBox", "Canvas")
+        With m_Canvas
+            .Left = 0
+            .Top = 0
+            .Width = UserControl.ScaleWidth
+            .Height = UserControl.ScaleHeight
+            .BackColor = RGB(240, 240, 240) '&H8000000F
+            .BorderStyle = 0 ' None
+            .AutoRedraw = True
+            .ScaleMode = vbPixels
+            .Font.Name = "Segoe UI"
+            .Font.Size = m_DPIFontSize  'DEF_FONT_SIZE
+            .Visible = True
+        End With
+        
+        canvashWnd = m_Canvas.hWnd
+        OriginalCanvasProc = SetWindowLong(canvashWnd, GWL_WNDPROC, AddressOf Canvas_WindowProc)
+
+        ' set defaults for the segments
+        With m_StyleSegment
+            .Bold = False
+            .Color = vbBlack
+            .FontName = "Segoe UI"
+            .FontSize = DEF_FONT_SIZE
+            .Italic = False
+            .Text = ""
+            .Underline = False
+        End With
+        
+        ucDictionary.Add canvashWnd, Me
+        StartupTrace "ucRTFMessage.Initialize leave"
+        Exit Sub
+InitFailed:
+        StartupTraceError "ucRTFMessage.Initialize"
+    End Sub
+
+    Private Sub UserControl_Terminate()
+        
+        ' have to release things when destorying the control
+        If canvashWnd <> 0 And OriginalCanvasProc <> 0 Then
+            Call SetWindowLong(canvashWnd, GWL_WNDPROC, OriginalCanvasProc)
+            canvashWnd = 0
+            OriginalCanvasProc = 0
+        End If
+        
+    End Sub
+    
+    Private Sub UserControl_Resize()
+        If Not m_Canvas Is Nothing Then
+            ' Fill the control. The old "- 25" inset was twips at 96 DPI and
+            ' became a large hole (or a wrap-width error) once ScaleMode is pixels.
+            m_Canvas.Move 0, 0, UserControl.ScaleWidth, UserControl.ScaleHeight
+            DrawMessage
+        End If
+    End Sub
+    
+    Private Sub m_Canvas_Paint()
+        DrawMessage
+    End Sub
+    
+    Private Function IsJustPunctuation(segmentText As String) As Boolean
+        
+        If Len(Trim(segmentText)) > 1 Then Return False ' more than 1 character can't be punctuation
+        
+        Dim asciiVal As Integer
+        asciiVal = Asc(segmentText)
+
+        ' Check common ASCII ranges for punctuation
+        IsJustPunctuation = (asciiVal >= 33 And asciiVal <= 47) Or (asciiVal >= 58 And asciiVal <= 64) Or _
+           (asciiVal >= 91 And asciiVal <= 96) Or (asciiVal >= 123 And asciiVal <= 126)
+
+    End Function
+
+    Function ScaleFontSize(size As Long) As Long
+        ScaleFontSize = MulDiv(size, m_DPI_Vertical, BASE_DPI)
+    End Function
+    
+    Private Sub DrawMessage()
+        
+        Dim hDC As Long
+        Dim x As Long, y As Long
+        Dim canvasWidth As Long
+        Dim canvasHeight As Long
+        Dim lineHeight As Long
+        Dim spacePadding As Long: spacePadding = MulDiv(6, m_DPI_Vertical, BASE_DPI)
+        Dim segCount As Integer
+        Dim debugSegmentWritten As String
+        Dim maxWordPx As Long
+        Dim maxLinePx As Long
+        Dim bottomPad As Long
+        
+        If m_Canvas Is Nothing Then Exit Sub
+        If Len(m_Message) = 0 Then
+            m_RequiredWidth = 0
+            m_RequiredHeight = 0
+            Exit Sub
+        End If
+        
+        hDC = m_Canvas.hDC
+        ' TextOut is in device pixels. Width \ TwipsPerPixelX overestimates the
+        ' wrap point when DPI > 100%, so text is drawn past the visible HWND.
+        GetClientSizePx m_Canvas.hWnd, canvasWidth, canvasHeight
+        If canvasWidth <= 1 Then canvasWidth = m_Canvas.ScaleWidth
+        x = 0: y = MulDiv(10, m_DPI_Vertical, BASE_DPI) ' give a little padding at the top of the message area
+
+        Dim segments As Collection
+        Set segments = ParseStyledMessage(m_Message)
+        
+        Dim seg As Variant
+        For Each seg In segments
+
+            segCount = segCount + 1
+            ' the segment is not just a punctuation mark
+            If Not IsJustPunctuation(Trim(segments(segCount).text)) Then
+
+                Dim words() As String
+                words = Split(seg.Text, " ")
+                
+                Dim i As Long
+                For i = 0 To UBound(words)
+                    Dim word As String
+                    word = words(i)
+                    If i < UBound(words) Then word = word & " " ' preserve spacing
+                    
+                    ' Create and select font
+                    Dim hFont As Long
+                    hFont = CreateFont(ScaleFontSize(seg.FontSize), 0, 0, 0, IIf(seg.Bold, FW_BOLD, FW_NORMAL), seg.Italic, seg.Underline _
+                            , 0, DEFAULT_CHARSET, 0, 0, 0, 0, seg.FontName)
+                    SelectObject hDC, hFont
+                    SetTextColor hDC, seg.Color
+                    SetBkMode hDC, 1
+
+                    ' Measure word
+                    Dim sz As SIZE
+                    GetTextExtentPoint32 hDC, word, Len(word), sz
+
+                    If sz.cx > maxWordPx Then maxWordPx = sz.cx
+                    If sz.cy > lineHeight Then lineHeight = sz.cy
+
+                    ' Wrap if needed (lineHeight must already be known)
+                    If x > 0 And x + sz.cx > canvasWidth Then
+                        x = 0
+                        y = y + lineHeight
+                    End If
+
+                    ' Draw word
+                    TextOut hDC, x, y, word, Len(word)
+                    x = x + sz.cx
+                    If x > maxLinePx Then maxLinePx = x
+
+                    DeleteObject hFont
+                Next i
+                
+            End If
+            
+        Next
+
+        bottomPad = MulDiv(8, m_DPI_Vertical, BASE_DPI)
+        m_RequiredHeight = y + lineHeight + bottomPad
+        m_RequiredWidth = maxWordPx
+        If maxLinePx > m_RequiredWidth Then m_RequiredWidth = maxLinePx
+        
+        'm_Canvas.Refresh()
+        QueueRedraw(m_Canvas.hWnd)
+    End Sub
+     
+    Function ParseStyledMessage(ByVal rawText As String) As Collection
+        
+        Dim segments As New Collection
+        Dim currentText As String
+        Dim i As Long
+        Dim tagOpen As Boolean
+        Dim tagName As String
+        Dim currentFontName As String: currentFontName = "Segoe UI"
+        Dim currentFontSize As Long: currentFontSize = m_DPIFontSize
+        Dim currentColor As Long: currentColor = vbBlack
+        Dim currentBold As Boolean: currentBold = False
+        Dim currentItalic As Boolean: currentItalic = False
+        Dim currentUnderline As Boolean: currentUnderline = False
+        Dim seg As New clsStyleSegment
+       
+        currentColor = vbBlack ' default
+
+        i = 1
+        Do While i <= Len(rawText)
+            If Mid(rawText, i, 1) = "[" Then
+                ' Flush currentText into a segment
+                If Len(currentText) > 0 Then
+                
+                    Set seg = New clsStyleSegment
+                    seg.Text = currentText
+                    seg.FontName = currentFontName
+                    seg.FontSize = currentFontSize * -1
+                    seg.Color = currentColor
+                    seg.Bold = currentBold
+                    seg.Italic = currentItalic
+                    seg.Underline = currentUnderline
+                    segments.Add seg
+                   
+                    currentText = ""
+                    Set seg = Nothing
+                End If
+
+                ' Parse tag
+                Dim tagEnd As Long: tagEnd = InStr(i, rawText, "]")
+                If tagEnd > 0 Then
+                    Dim tagContent As String: tagContent = Mid(rawText, i + 1, tagEnd - i - 1)
+                    Select Case LCase(tagContent)
+                        
+                        Case "b": currentBold = True
+                        Case "/b": currentBold = False
+                        Case "i": currentItalic = True
+                        Case "/i": currentItalic = False
+                        Case "u": currentUnderline = True
+                        Case "/u": currentUnderline = False
+                        Case "/font"
+                            currentFontName = "Segoe UI"
+                            currentFontSize = m_DPIFontSize  'DEF_FONT_SIZE
+                            currentColor = vbBlack
+                        Case Else
+                            If Left(tagContent, 4) = "font" Then
+
+                                ' Parse font attributes
+                                Dim attrParts() As String: attrParts = Split(tagContent, " ")
+                                Dim j As Long
+                                For j = 1 To UBound(attrParts)
+                                    Dim kv() As String: kv = Split(attrParts(j), "=")
+                                    If UBound(kv) = 1 Then
+                                        Select Case LCase(kv(0))
+                                            Case "name": currentFontName = Replace(kv(1), """", "")
+                                            Case "size": currentFontSize = CLng("-" & kv(1) * (m_DPI_Horizontal / BASE_DPI))      '  CLng("-" & kv(1))
+                                            Case "color"
+                                                Select Case LCase(kv(1))
+                                                    Case "vbred": currentColor = vbRed
+                                                    Case "vbblue": currentColor = vbBlue
+                                                    Case "vbgreen": currentColor = &H006400  'vbGreen dark green
+                                                    Case "vbmagenta": currentColor = vbMagenta
+                                                    Case "vbcyan": currentColor = vbCyan
+                                                    Case "vbwhite": currentColor = vbWhite
+                                                    Case "vbyellow": currentColor = vbYellow
+                                                    Case Else
+                                                        ' add the ability to send an RGB color   tagContent:   "font color=rgb(4, 55, 242)"
+                                                        If Left(UCase(kv(1)), 3) = "RGB" Then
+                                                            Dim extractRGB As String = Mid(UCase(tagContent), InStr(UCase(tagContent), "=RGB") + 5)
+                                                            extractRGB = Left(extractRGB, Len(extractRGB) - 1) ' remove the last )
+                                                            Dim rgbColor() As String = Split(extractRGB, ",")
+                                                           currentColor = RGB(CInt(rgbColor(0)), CInt(rgbColor(1)), CInt(rgbColor(2)))
+                                                        Else
+                                                            currentColor = vbBlack
+                                                        End If
+                                                End Select
+                                        End Select
+                                    End If
+                                Next
+                            End If
+                    End Select
+                    i = tagEnd
+                End If
+            Else
+                currentText = currentText & Mid(rawText, i, 1)
+            End If
+                        
+            i = i + 1
+        Loop
+        
+        ' Final flush
+        If Len(currentText) > 0 Then
+            Set seg = New clsStyleSegment
+            seg.Text = currentText
+            seg.FontName = currentFontName
+            seg.FontSize = currentFontSize * -1
+            seg.Color = currentColor
+            seg.Bold = currentBold
+            seg.Italic = currentItalic
+            seg.Underline = currentUnderline
+            segments.Add seg
+            Set seg = Nothing
+        End If
+
+        ' fix punctuation getting its own segment
+        Dim segIndex As Integer
+        Dim singlePunctuationFound As Boolean = False
+        
+        For segIndex = 1 To segments.Count
+            If Len(Trim(segments(segIndex).text)) = 1 Then
+                ' TODO: come back to this
+                segments(segIndex - 1).text = segments(segIndex - 1).text & Trim(segments(segIndex).text)
+            End If
+        Next
+       
+        Set ParseStyledMessage = segments
+        
+    End Function
+    
+End Class

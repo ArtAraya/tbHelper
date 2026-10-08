@@ -1,0 +1,306 @@
+[Description("")]
+[FormDesignerId("F758235F-E887-44A4-9E19-8C2CBB67E01C")]
+[ClassId("79AA1168-F64B-4672-9254-EB73E6BD0FD9")]
+[InterfaceId("8A2D25A9-8805-4969-AF3F-992E12DB903E")]
+[EventInterfaceId("6226E055-9303-40D9-BD06-A289ACAF8BE8")]
+[COMControl]
+Class ucFolderList
+
+    ' --- Public API ---
+    Public Event SelectionChanged(SelectedPath As String)
+    
+    Private m_DPI_Horizontal As Long
+    Private m_DPI_Vertical As Long
+    Private m_DPIFontSize As Integer
+    Private m_PreviousFolderFound As Boolean = False
+    
+    Private Const TEXT_BASE_FONT_SIZE = 9.75
+
+    Private Const MAX_FONT_SIZE As Long = 13
+    Private Const BASE_DPI = 96
+    Private Const FOLDER_CLOSED_ICON = 1
+    Private Const FOLDER_OPEN_ICON = 2
+    
+    Public Property Get PreviousFolderFound() As Boolean
+ 
+        PreviousFolderFound = m_PreviousFolderFound
+
+    End Property
+    
+    Private mFolderOpen As StdPicture
+    Private mFolderClosed As StdPicture
+
+    Public Property Set FolderOpenIcon(pic As StdPicture)
+        On Error Resume Next
+        If pic Is Nothing Then
+            Err.Clear
+            Exit Property
+        End If
+        Set mFolderOpen = pic
+        ilIcons.ListImages.Add FOLDER_OPEN_ICON, "folder_open", pic
+        Err.Clear
+    End Property
+
+    Public Property Set FolderClosedIcon(pic As StdPicture)
+        On Error Resume Next
+        If pic Is Nothing Then
+            Err.Clear
+            Exit Property
+        End If
+        Set mFolderClosed = pic
+        ilIcons.ListImages.Add FOLDER_CLOSED_ICON, "folder_closed", pic
+        Err.Clear
+    End Property
+    
+    Public Function Update() As Boolean
+        
+        On Error GoTo UpdateFailed
+        UserControl.Refresh()
+        
+        Update = True
+        
+        On Error GoTo 0
+        Exit Function
+        
+    UpdateFailed:
+        Update = False
+        
+    End Function
+    
+    Public Property Get Path() As String
+        If Not tvFolders.SelectedItem Is Nothing Then
+            Path = tvFolders.SelectedItem.FullPath
+        End If
+    End Property
+
+    Public Property Let Path(value As String)
+
+        ShowDrive Left(value, 2)
+        HighlightPreviousFolder value
+        
+    End Property
+    
+    Private Sub UserControl_Initialize()
+        On Error GoTo InitFailed
+        StartupTrace "ucFolderList.Initialize enter"
+        
+        ' Setup ImageList using our own bundled icon files.
+
+        CalculateDPIValues
+       
+        ' Style the TreeView to match your UI
+        tvFolders.BorderStyle = vbBSNone
+        tvFolders.LineStyle = tvwRootLines
+        tvFolders.FontName = "Segoe UI"
+        tvFolders.FontSize = m_DPIFontSize
+        
+        'ApplyBottomRoundedCorners tvFolders, 4, 4, True         ' Then apply to the tree
+
+        StartupTrace "ucFolderList.Initialize leave"
+        Exit Sub
+InitFailed:
+        StartupTraceError "ucFolderList.Initialize"
+    End Sub
+    
+    Private Sub CalculateDPIValues()
+        
+        Dim hdc As Long
+        Dim dpiX As Long
+        Dim dpiY As Long
+
+        ' Get the device context (DC) for the screen
+        hdc = GetDC(0)
+
+        ' Get the horizontal and vertical DPI values
+        dpiX = GetDeviceCaps(hdc, LOGPIXELSX)
+        dpiY = GetDeviceCaps(hdc, LOGPIXELSY)
+
+        ' Release the device context
+        ReleaseDC 0, hdc
+
+        ' Display the DPI values
+        m_DPI_Horizontal = dpiX
+        m_DPI_Vertical = dpiY
+
+        ' Example for scaling controls (assuming 96 DPI as baseline)
+        m_DPIFontSize = TEXT_BASE_FONT_SIZE * (dpiX / BASE_DPI)
+        If m_DPIFontSize > MAX_FONT_SIZE Then m_DPIFontSize = MAX_FONT_SIZE
+
+    End Sub
+    
+    Public Sub ShowDrive(ByVal DrivePath As String)
+        
+        tvFolders.Nodes.Clear
+        On Error Resume Next ' In case of unready drives
+        
+            Dim RootNode As Node
+            Set RootNode = tvFolders.Nodes.Add(, , DrivePath, DrivePath)
+            RootNode.Image = FOLDER_CLOSED_ICON
+            AddSubFolders RootNode
+            RootNode.Expanded = True ' Auto-expand the root
+            
+        On Error GoTo 0
+        
+    End Sub
+
+    Private Sub AddSubFolders(ParentNode As Node)
+        
+        Dim SubFolder As String
+        Dim FullPath As String
+        Dim NewNode As Node
+        Static dummyCounter As Long
+    
+        On Error Resume Next ' Ignore permission errors on folders
+        
+        FullPath = ParentNode.FullPath
+        If Right$(FullPath, 1) <> "\" Then FullPath = FullPath & "\"
+    
+        SubFolder = Dir(FullPath & "*", vbDirectory)
+        Do While Len(SubFolder) > 0
+            If SubFolder <> "." And SubFolder <> ".." Then
+                If (GetAttr(FullPath & SubFolder) And vbDirectory) = vbDirectory Then
+                
+                    Set NewNode = tvFolders.Nodes.Add(ParentNode, tvwChild, FullPath & SubFolder, SubFolder)
+                    NewNode.Image = FOLDER_CLOSED_ICON
+                    NewNode.SelectedImage = FOLDER_OPEN_ICON
+                    
+                    ' Add a dummy node so the '+' appears. This is key for performance.
+                    dummyCounter = dummyCounter + 1
+                    tvFolders.Nodes.Add NewNode, tvwChild, "dummy" & dummyCounter, "dummy"
+
+                End If
+            End If
+            SubFolder = Dir
+        Loop
+        
+    End Sub
+
+    Private Sub tvFolders_Expand(ByVal Node As Node)
+        
+        ' This is the "on-demand" loading part.
+        ' Remove the dummy node and load the real subfolders.
+        If Node.Children > 0 Then
+            If Node.Child.Text = "dummy" Then
+                tvFolders.Nodes.Remove Node.Child.Index
+                AddSubFolders Node
+            End If
+        End If
+        Node.Image = FOLDER_OPEN_ICON
+        
+    End Sub
+
+    Private Sub tvFolders_Collapse(ByVal Node As Node)
+        Node.Image = FOLDER_CLOSED_ICON
+    End Sub
+
+    Private Sub UserControl_Resize()
+        
+        ' Make the TreeView fill the entire user control area.
+        ' Check if tvFolders exists to prevent errors during design time.
+        If Not tvFolders Is Nothing Then
+            tvFolders.Move 0, 0, UserControl.ScaleWidth, UserControl.ScaleHeight
+        End If
+        
+        ApplyRoundedCorners UserControl, 4, 4
+    End Sub
+    
+    Private Sub tvFolders_NodeClick(ByVal Node As Node)
+        
+        If Node.Children = 1 And Node.Child.Text = "dummy" Then
+            tvFolders.Nodes.Remove Node.Child.Index
+            AddSubFolders Node
+        End If
+        
+        RaiseEvent SelectionChanged(Node.FullPath)
+    End Sub
+    
+    Private Sub HighlightPreviousFolder(previousFolder As String)
+        
+        Dim arrFolders() As String
+        Dim i As Long
+        Dim currentNode As Node
+        Dim childNode As Node
+        Dim nodeFound As Boolean
+        
+        arrFolders = Split(previousFolder, "\")
+        
+        Set currentNode = Nothing
+        For Each childNode In tvFolders.Nodes
+            If LCase$(childNode.Text) = LCase$(arrFolders(0)) Then
+                Set currentNode = childNode
+                Exit For
+            End If
+        Next childNode
+        
+        If currentNode Is Nothing Then
+            ' if the previous path first node isn't found 
+            ' default to the root folder
+            Set currentNode = tvFolders.Nodes(1)
+            Exit Sub
+        End If
+        
+        nodeFound = True ' assume root is found
+        For i = 1 To UBound(arrFolders) - 1
+            Set childNode = FindChildNode(currentNode, arrFolders(i))
+            If Not childNode Is Nothing Then
+                currentNode.Expanded = True
+                Set currentNode = childNode
+            Else
+                nodeFound = False
+                Exit For
+            End If
+        Next i
+        
+        m_PreviousFolderFound = nodeFound
+        
+        If nodeFound Then
+            currentNode.EnsureVisible()
+            Set tvFolders.SelectedItem = currentNode
+            
+            With tvFolders
+                .SelectedItem.Expanded = True
+                .HideSelection = False
+                .Refresh()
+                .SetFocus()
+            End With
+            
+            DoEvents()
+        Else
+            Set tvFolders.SelectedItem = tvFolders.Nodes(1)
+        End If
+            
+        QueueRedraw(UserControl.hWnd)
+        
+    End Sub
+    
+    Private Function FindChildNode(ParentNode As Node, childNoteText As String) As Node
+        
+        ' find the child node that has the text passed in and return it
+        Dim cnIndex As Long
+        Dim childNode As Node
+        
+        Set childNode = ParentNode.Child
+        Set FindChildNode = Nothing
+        
+        Do While Not childNode Is Nothing
+            
+            If LCase$(childNode.Text) = LCase$(childNoteText) Then
+                Set FindChildNode = childNode
+                Exit Do
+            End If
+            
+            Set childNode = childNode.Next
+        Loop
+        
+    End Function
+    
+    Private Sub UserControl_Show()
+        On Error GoTo ShowFailed
+        StartupTrace "ucFolderList.Show enter"
+        Set tvFolders.ImageList = ilIcons
+        StartupTrace "ucFolderList.Show leave"
+        Exit Sub
+ShowFailed:
+        StartupTraceError "ucFolderList.Show"
+    End Sub
+End Class

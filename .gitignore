@@ -2,8 +2,11 @@ debug_log.txt
 log.txt
 settings.txt
 resource_dump.txt
-tBHelper.twinproj
-Sources/
+/Form1.twin
+/Form1.tbform
+/classes/
+/modules/
+/user controls/
 Build/tBHelper_win32.exe
 Build/resource_dump.txt
 Build/Resources/

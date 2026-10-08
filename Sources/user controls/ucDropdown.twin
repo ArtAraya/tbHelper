@@ -1,0 +1,158 @@
+[Description("")]
+[FormDesignerId("1D635DC2-3D7B-4858-BDFC-3311FA053636")]
+[ClassId("97288DC2-C853-46E8-BFB6-87938BCF281F")]
+[InterfaceId("2557314B-3980-43FC-8013-E90314F83D5F")]
+[EventInterfaceId("B54AA7D9-EDD8-4157-8064-786830449DE7")]
+[COMControl]
+Class ucDropdown
+
+    ' --- Public Events ---
+    Public Event SelectionChanged(ByVal SelectedZip As String)
+    Public Event DropDown()
+
+    ' --- Private State ---
+    Private m_SelectedItem As String
+    Private WithEvents Popup As frmDropdownPopup
+    Private m_IsExpanded As Boolean
+    Private mAZipIcon As StdPicture
+    Private m_DPI_Horizontal As Long
+    Private m_DPI_Vertical As Long
+    Private m_DPIFontSize As Integer
+    Private Const TEXT_BASE_FONT_SIZE = 9.75
+
+    Private Const MAX_FONT_SIZE As Long = 13
+    Private Const BASE_DPI = 96
+    
+    Const PADDING_RAW As Long = 5
+    Const BUTTON_WIDTH_RAW As Long = 30
+    Const ARROW_HALF_WIDTH_RAW As Long = 4
+    Const ARROW_HALF_HEIGHT_RAW As Long = 2
+    Const ICON_SIZE_RAW As Long = 16
+    
+    '@DefaultMember
+    Public Property Get Item() As String
+        Item = m_SelectedItem
+    End Property
+
+    Public Property Let Item(ByVal Value As String)
+        m_SelectedItem = Value
+        RedrawUserControl
+        RaiseEvent SelectionChanged(m_SelectedItem)
+    End Property
+
+    Public Sub Clear()
+        UserControl.Cls
+    End Sub
+    
+    Public Sub Collapse()
+        m_IsExpanded = False
+        RedrawUserControl
+    End Sub
+
+    Private Sub CalculateDPIValues()
+        
+        Dim hdc As Long
+        Dim dpiX As Long
+        Dim dpiY As Long
+
+        ' Get the device context (DC) for the screen
+        hdc = GetDC(0)
+
+        ' Get the horizontal and vertical DPI values
+        dpiX = GetDeviceCaps(hdc, LOGPIXELSX)
+        dpiY = GetDeviceCaps(hdc, LOGPIXELSY)
+
+        ' Release the device context
+        ReleaseDC 0, hdc
+
+        ' Display the DPI values
+        m_DPI_Horizontal = dpiX
+        m_DPI_Vertical = dpiY
+
+        ' Example for scaling controls (assuming 96 DPI as baseline)
+        m_DPIFontSize = TEXT_BASE_FONT_SIZE * (dpiX / BASE_DPI)
+        If m_DPIFontSize > MAX_FONT_SIZE Then m_DPIFontSize = MAX_FONT_SIZE
+
+    End Sub
+    
+    Private Sub UserControl_Initialize()
+        On Error GoTo InitFailed
+        StartupTrace "ucDropdown.Initialize enter"
+        
+        CalculateDPIValues
+        
+        UserControl.ScaleMode = vbPixels
+        UserControl.AutoRedraw = False
+        UserControl.Font.Name = "Segoe UI"
+        UserControl.Font.Size = m_DPIFontSize
+        m_IsExpanded = False
+        
+        ucDictionary.Add Me.hWnd, Me
+        StartupTrace "ucDropdown.Initialize leave"
+        Exit Sub
+InitFailed:
+        StartupTraceError "ucDropdown.Initialize"
+    End Sub
+
+    Private Sub UserControl_Click()
+        m_IsExpanded = Not m_IsExpanded
+        RedrawUserControl
+        RaiseEvent DropDown()
+    End Sub
+
+    Private Sub RedrawUserControl()
+        
+        Dim padding As Long: padding = MulDiv(PADDING_RAW, m_DPI_Horizontal, BASE_DPI)
+        Dim buttonWidth As Long: buttonWidth = MulDiv(BUTTON_WIDTH_RAW, m_DPI_Horizontal, BASE_DPI)
+        Dim arrowHalfWidth As Long: arrowHalfWidth = MulDiv(ARROW_HALF_WIDTH_RAW, m_DPI_Horizontal, BASE_DPI)
+        Dim arrowHalfHeight As Long: arrowHalfHeight = MulDiv(ARROW_HALF_HEIGHT_RAW, m_DPI_Vertical, BASE_DPI)
+        Dim iconSize As Long: iconSize = MulDiv(ICON_SIZE_RAW, m_DPI_Vertical, BASE_DPI)
+
+        Dim xMid As Long, yMid As Long
+
+        UserControl.FillColor = vbWhite
+        UserControl.Line (0, 0)-(ScaleWidth, ScaleHeight), vbWhite, BF
+
+        ' drop button
+        UserControl.FillColor = RGB(10, 80, 131)
+        UserControl.Line (ScaleWidth - buttonWidth, 0)-(ScaleWidth, ScaleHeight), UserControl.FillColor, BF
+
+        ' arrow on the drop button
+        UserControl.ForeColor = vbWhite
+        xMid = ScaleWidth - buttonWidth \ 2
+        yMid = ScaleHeight \ 2
+
+        If m_IsExpanded Then
+            Line (xMid - arrowHalfWidth, yMid + arrowHalfHeight)-(xMid, yMid - arrowHalfHeight)
+            Line (xMid + arrowHalfWidth, yMid + arrowHalfHeight)-(xMid, yMid - arrowHalfHeight)
+        Else
+            Line (xMid - arrowHalfWidth, yMid - arrowHalfHeight)-(xMid, yMid + arrowHalfHeight)
+            Line (xMid + arrowHalfWidth, yMid - arrowHalfHeight)-(xMid, yMid + arrowHalfHeight)
+        End If
+
+        ' --- Draw Icon + Zip Filename ---
+        If Not mAZipIcon Is Nothing Then
+            PaintPicture mAZipIcon, padding, (ScaleHeight - iconSize) \ 2, iconSize, iconSize
+        End If
+
+        UserControl.ForeColor = vbBlack
+        CurrentX = iconSize + padding
+        CurrentY = (ScaleHeight - TextHeight("S")) \ 2
+        Print m_SelectedItem
+
+        QueueRedraw(hWnd)
+    End Sub
+    
+    
+    Private Sub UserControl_Paint()
+        RedrawUserControl
+        
+    End Sub
+
+    Private Sub UserControl_Resize()
+        ApplyRoundedCorners UserControl, 4, 4
+        RedrawUserControl
+    End Sub
+
+    
+End Class

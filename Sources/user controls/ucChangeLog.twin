@@ -1,0 +1,757 @@
+[Description("")]
+[FormDesignerId("AE0E71E5-28F7-48E0-985D-A202988830AD")]
+[ClassId("014B5795-458A-49AE-839F-E60A19B613DF")]
+[InterfaceId("B4BA79FB-6169-4A0E-A5F2-CF0140576517")]
+[EventInterfaceId("73D657EC-7E4C-45AB-B989-B29D656C6E7E")]
+[COMControl]
+Class ucChangeLog
+
+    Option Explicit
+
+    '************** 
+    ' used to handle scrolling the change log user control better
+    '*******************************
+    ' Private Declare Function SetTimer Lib "user32" (ByVal hWnd As Long, ByVal nIDEvent As Long, ByVal uElapse As Long, ByVal lpTimerFunc As Long) As Long
+    ' Private Declare Function KillTimer Lib "user32" (ByVal hWnd As Long, ByVal nIDEvent As Long) As Long
+    ' Private Const DEBOUNCE_TIMER_ID As Long = 1001
+        
+    Private Const GWL_WNDPROC As Long = -4
+    Private Const WM_MOUSEWHEEL As Long = &H20A
+    
+    Public canvashWnd As LongPtr
+
+    Private Type Size
+        cx As Long
+        cy As Long
+    End Type
+
+    Public Event ItemClick(ByVal ItemIndex As Long)
+    Public Event ItemDoubleClick(ByVal ItemIndex As Long)
+
+    Private m_Entries() As clsChangeLogEntry
+    Private m_EntryCount As Long
+    Private m_FilterType As String
+    Private m_SelectedIndex As Long
+    Private m_ScrollOffset As Long
+    'Private m_LastCanvasRedrawTime As Double
+    Private m_RedrawQueued As Boolean
+    Private m_DrawTheEntries As Boolean
+    
+    ' Drawing surface
+    Private WithEvents m_Canvas As PictureBox
+    Private WithEvents m_HeaderCanvas As PictureBox
+    Private WithEvents m_VScrollBar As VScrollBar
+    
+    Private m_DPI_Horizontal As Long
+    Private m_DPI_Vertical As Long
+    Private m_DPIHeaderFontSize As Integer
+    Private m_DPIFontSize As Integer
+    Private m_BadgeDPIFontSize As Integer
+    Private m_BadgeFont As Long
+    Private m_DefaultFont As Long
+    Private m_DPIRowHeight As Integer
+    
+    Private m_Columns() As clsChangeLogColumn
+    Private m_ColumnCount As Integer
+        
+    Private Const TEXT_COLOR_WHITE = &HFFFFFF
+    Private Const BACKGROUND_COLOR = &HFFFFFF
+    
+    Private Const TEXT_COLOR_DARK = &H333333
+    Private Const TEXT_COLOR_VERSION = -RGB(128, 49, 116) ' Blue version text
+    Private Const SELECTED_COLOR = &HEAE2D0    ' Light blue selection    
+    Private Const BORDER_COLOR = &HE0E0E0
+
+    Private Const TEXT_BASE_FONT_SIZE = 11
+    Const MAX_FONT_SIZE As Long = 13
+    
+    'Private Const ROW_HEIGHT = 40
+    Private Const HEADER_HEIGHT = 500
+    Private Const SCROLL_WIDTH = 200
+    Private Const BASE_DPI = 96
+
+    Public Sub Clear()
+        m_Canvas.Cls
+    End Sub
+    
+    Public Property Get LogEntries() As clsChangeLogEntry()
+        LogEntries = m_Entries
+    End Property
+
+    Public Sub BeginUpdate()
+        ' tell the control to not draw entries to the canvas
+        m_DrawTheEntries = False
+    End Sub
+    
+    Public Sub EndUpdate()
+        ' tell the control it is now time to draw the entries
+        m_DrawTheEntries = True
+        RedrawCanvas
+    End Sub
+    
+    Private Sub CalculateDPIValues()
+        
+        Dim hdc As Long
+        Dim dpiX As Long
+        Dim dpiY As Long
+
+        ' Get the device context (DC) for the screen
+        hdc = GetDC(0)
+
+        ' Get the horizontal and vertical DPI values
+        dpiX = GetDeviceCaps(hdc, LOGPIXELSX)
+        dpiY = GetDeviceCaps(hdc, LOGPIXELSY)
+
+        ' Release the device context
+        ReleaseDC 0, hdc
+
+        ' Display the DPI values
+        m_DPI_Horizontal = dpiX
+        m_DPI_Vertical = dpiY
+
+        ' Example for scaling controls (assuming 96 DPI as baseline)
+        m_DPIFontSize = TEXT_BASE_FONT_SIZE * (dpiX / BASE_DPI)
+        If m_DPIFontSize > MAX_FONT_SIZE Then m_DPIFontSize = MAX_FONT_SIZE
+
+        m_DPIHeaderFontSize = (TEXT_BASE_FONT_SIZE + 1) * (dpiX / BASE_DPI)
+        If m_DPIHeaderFontSize > MAX_FONT_SIZE Then m_DPIHeaderFontSize = MAX_FONT_SIZE
+        
+        ' adding a calculation for the row height and removing the ROW_HEIGHT constant - thanks for AARays on VBForums
+        m_DPIRowHeight = MulDiv(40, m_DPI_Vertical, BASE_DPI)
+        
+        m_BadgeDPIFontSize = m_DPIFontSize - 0.5
+        If m_BadgeDPIFontSize < 8 Then m_BadgeDPIFontSize = 8 ' minimum readable size
+
+    End Sub
+    
+    Private Sub UserControl_Initialize()
+        On Error GoTo InitFailed
+        StartupTrace "ucChangeLog.Initialize enter"
+    
+        CalculateDPIValues
+        
+        InitializeControls
+        
+        m_FilterType = "All" ' initially show all types of change log items
+        
+        ' array of change log entries
+        ReDim m_Entries(0)
+                
+        m_EntryCount = 0
+        m_ColumnCount = 0
+        m_SelectedIndex = -1
+        m_ScrollOffset = 0
+        m_DrawTheEntries = True
+        
+        'capture mouse scroll
+        canvashWnd = m_Canvas.hWnd
+        ucDictionary.Add canvashWnd, Me
+        
+        'originalCanvasProc = SetWindowLongPtr(canvashWnd, GWL_WNDPROC, AddressOf Canvas_WindowProc)
+        OriginalCanvasProc = SetWindowLong(canvashWnd, GWL_WNDPROC, AddressOf Canvas_WindowProc)
+        
+        StartupTrace "ucChangeLog.Initialize leave"
+        Exit Sub
+InitFailed:
+        StartupTraceError "ucChangeLog.Initialize"
+    End Sub
+
+    Private Sub InitializeControls()
+        ' Create header canvas
+        Set m_HeaderCanvas = Controls.Add("VB.PictureBox", "HeaderCanvas")
+        With m_HeaderCanvas
+            .Left = 0
+            .Top = 0
+            .ScaleMode = vbPixels
+            .Width = UserControl.ScaleWidth - SCROLL_WIDTH
+            .Height = HEADER_HEIGHT
+            .BackColor = RGB(189, 189, 189)
+            .BorderStyle = 0 ' None
+            .AutoRedraw = True
+            .Font.Name = "Segoe UI"
+            .Font.Size = m_DPIHeaderFontSize' 11
+            .Font.Bold = True
+            .Visible = True
+            .Cls()
+            .Refresh()
+        End With
+    
+        ' Create canvas for the change log items
+        Set m_Canvas = Controls.Add("VB.PictureBox", "Canvas")
+        With m_Canvas
+            .Left = 0
+            .Top = HEADER_HEIGHT
+            .Width = UserControl.ScaleWidth - SCROLL_WIDTH ' Leave space for scrollbar
+            .Height = UserControl.ScaleHeight - HEADER_HEIGHT
+            .BackColor = BACKGROUND_COLOR
+            .BorderStyle = 0 ' None
+            .AutoRedraw = True
+            .ScaleMode = vbPixels
+            .Font.Name = "Segoe UI"
+            .Font.Size = m_DPIFontSize '10
+            .Visible = True
+        End With
+        
+        ' Create vertical scrollbar
+        Set m_VScrollBar = Controls.Add("VB.VScrollBar", "VScroll")
+        With m_VScrollBar
+            .Left = UserControl.ScaleWidth - SCROLL_WIDTH
+            .Top = HEADER_HEIGHT
+            .Width = SCROLL_WIDTH
+            .Height = UserControl.ScaleHeight - HEADER_HEIGHT
+            .Min = 0
+            .Max = 0
+            .Value = 0
+            .Visible = False
+        End With
+    
+        DrawHeaders
+
+        ' set the fonts for the change log
+        m_DefaultFont = CreateFont(-MulDiv(m_DPIFontSize, m_DPI_Vertical, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI")
+        m_BadgeFont = CreateFont(-MulDiv(m_BadgeDPIFontSize, m_DPI_Vertical, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI")
+        
+    End Sub
+
+    ' Sub OnDebouncedScroll(ByVal hwnd As Long, ByVal uMsg As Long, ByVal idEvent As Long, ByVal dwTime As Long)
+    '     '8-1-25 modify scrolling to not redraw on every wheel roll
+    '     KillTimer hwnd, DEBOUNCE_TIMER_ID
+    '     RedrawCanvas
+    ' End Sub
+    Public Sub RequestHeaderRedraw()
+        ' tell the system to update this uc 
+        
+        If Not (m_Canvas Is Nothing Or m_Canvas.hDC = 0) Then
+            'WriteToDebugLogFile("   Change Log:  RequestHeaderRedraw for " & Me.Name & " on parent: " & Me.Parent.name)
+            QueueRedraw m_Canvas.hWnd
+        Else
+            'WriteToDebugLogFile("   Change Log:  RequestHeaderRedraw criteria failed *************")
+        End If
+    End Sub
+    
+    Public Sub RequestCanvasRedraw()
+        
+        ' the change log needs to update the ui  
+        If m_RedrawQueued Then Exit Sub
+        m_RedrawQueued = True
+                        
+        If Not (m_Canvas Is Nothing Or m_Canvas.hDC = 0) Then
+            'WriteToDebugLogFile("   Change Log:  RequestCanvasRedraw for " & Me.Name & " on parent: " & Me.Parent.name)
+            QueueRedraw m_Canvas.hWnd
+        Else
+            'WriteToDebugLogFile("   Change Log:  RequestCanvasRedraw: m_Canvas Is Nothing Or m_Canvas.hDC = 0")
+        End If
+    End Sub
+    
+    Public Property Let SetColumns(value() As clsChangeLogColumn)
+        
+        On Error GoTo BadHeaderValues
+        
+        m_Columns = value
+        
+        ' count the columns
+        Dim c As clsChangeLogColumn
+        Dim cCount As Integer
+        Dim calcColumnWidth As Integer
+        
+        For Each c In m_Columns
+            ' DPI calculations for the column widths of the log
+            calcColumnWidth = MulDiv(c.Width, m_DPI_Horizontal, BASE_DPI)
+            If calcColumnWidth < 50 Then calcColumnWidth = 50
+            If calcColumnWidth > 2000 Then calcColumnWidth = 2000
+            c.Width = calcColumnWidth
+            cCount += 1
+        Next
+        
+        m_ColumnCount = cCount
+        
+        On Error GoTo 0
+        DrawHeaders()
+        
+        Exit Property
+        
+    BadHeaderValues:
+        MsgBox("The column header values passed could not be used!" & vbCrLf & Err.Description, vbCritical, "Changle Log")
+    End Property
+    
+    Private Sub DrawHeaders()
+        
+        If m_ColumnCount = 0 Then Exit Sub
+        
+        On Error GoTo DrawError
+        
+        Dim hdc As Long
+        Dim hFont As Long
+        Dim hOldFont As Long
+        Dim xPos As Long
+        Dim i As Long
+
+        m_HeaderCanvas.Cls
+        hdc = m_HeaderCanvas.hDC
+
+        Dim basePointSize As Long
+        basePointSize = 9 ' instead of 11
+
+        Dim targetPointSize As Long
+        targetPointSize = basePointSize
+
+        If m_DPI_Vertical > BASE_DPI Then
+            targetPointSize = basePointSize + ((m_DPI_Vertical - BASE_DPI) \ 48)
+        End If
+        
+        ' dpi changes 
+        Dim scaledFontHeight As Long
+        
+        ' Convert to logical height
+        scaledFontHeight = -MulDiv(targetPointSize, m_DPI_Vertical, 72)
+                
+        hFont = CreateFont(scaledFontHeight, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI")
+        If hFont <> 0 Then hOldFont = SelectObject(hdc, hFont)
+
+        SetBkMode hdc, 1
+        SetTextColor hdc, TEXT_COLOR_DARK
+
+        xPos = ScaleDesignPx(20)
+        Dim col As clsChangeLogColumn
+        For Each col In m_Columns
+            TextOut hdc, xPos, ScaleDesignPx(8), col.Name, Len(col.Name)
+            xPos = xPos + col.Width
+        Next
+        
+        If hFont <> 0 Then
+            SelectObject hdc, hOldFont
+            DeleteObject hFont
+        End If
+
+        RequestHeaderRedraw
+
+        Exit Sub
+        
+    DrawError:
+        'WriteToDebugLogFile("The column header values passed could not be used!" & vbCrLf & Err.Description)
+        
+    End Sub
+
+    Private Sub m_Canvas_Paint()
+        RedrawCanvas
+        
+    End Sub
+
+    Private Sub RedrawCanvas()
+        
+        ' if this is false, then don't draw the entries right away.
+        If Not m_DrawTheEntries Then Exit Sub
+        
+        Dim i As Long
+        Dim yPos As Long
+        Dim visibleEntries As Long
+        Dim startIndex As Long
+        Dim endIndex As Long
+    
+        m_Canvas.Cls
+        m_Canvas.BackColor = BACKGROUND_COLOR
+    
+        ' Calculate visible range from the HWND client size (device pixels)
+        visibleEntries = Int(ClientHeightPx(m_Canvas.hWnd) / m_DPIRowHeight) + 1
+        startIndex = m_ScrollOffset
+        endIndex = startIndex + visibleEntries
+    
+        'WriteToDebugLogFile("      ucChanglog: RedrawCanvas, endIndex: " & endIndex)
+        
+        If endIndex > GetFilteredEntryCount() Then endIndex = GetFilteredEntryCount()
+    
+        yPos = 0
+        For i = startIndex To endIndex - 1
+            DrawRow i, yPos
+            yPos = yPos + m_Entries(i).EntryHeight
+        Next i
+    
+        RequestCanvasRedraw
+        
+    End Sub
+
+    Private Sub DrawRow(ByVal entryIndex As Long, ByVal yPos As Long)
+        
+        Dim entry As clsChangeLogEntry
+        Dim actualIndex As Long
+        Dim hdc As Long
+        Dim rowRect As RECT
+        Dim hBrush As Long
+        Dim isSelected As Boolean
+        Dim xPos As Long
+        Dim i As Long
+        Dim col As clsChangeLogColumn
+        Dim value As String
+                
+        Dim BASE_LINE_HEIGHT As Integer = MulDiv(18, m_DPI_Vertical, BASE_DPI)
+                
+        actualIndex = GetFilteredEntryIndex(entryIndex)
+        If actualIndex = -1 Then Exit Sub
+
+        Set entry = m_Entries(actualIndex)
+        isSelected = (actualIndex = m_SelectedIndex)
+        hdc = m_Canvas.hDC
+        
+        'WriteToDebugLogFile("      ucChanglog: DrawRow no entry found, entryIndex is " & entryIndex & " actualIndex: " & actualIndex)
+                
+        ' does the description field exists in this row
+        ' needed to create the rect that the row needs to display properly
+        Dim includesDescription As Boolean = False
+        Dim thisRowHeight As Long = m_DPIRowHeight 'ROW_HEIGHT
+        
+        ' for now loop the columns to see if description is one of the columns (change to WrappedEnabled if this works)
+        For Each col In m_Columns
+            If UCase(col.Name) = "DESCRIPTION" Then
+                includesDescription = True
+                Exit For
+            End If
+        Next
+        
+        ' if the column exists, then how many lines will wrapping the value need?
+        Dim requiredLines As Integer = 1    ' how many lines will this row need to write correctly
+        If includesDescription Then
+            Dim descrLines As Collection
+            Set descrLines = WrapTextToLines(entry.Values("DESCRIPTION"), col.Width - 8, hdc)
+            requiredLines = descrLines.Count
+            
+            ' in the event that description is blank 
+            If requiredLines < 2 Then
+                thisRowHeight = m_DPIRowHeight
+            Else
+                thisRowHeight = (requiredLines * BASE_LINE_HEIGHT) + MulDiv(8, m_DPI_Vertical, BASE_DPI)
+            End If
+        End If
+
+        ' create the rect using the precalculated height
+        rowRect.Left = 0
+        rowRect.Top = yPos
+        rowRect.Right = ClientWidthPx(m_Canvas.hWnd)
+        rowRect.Bottom = yPos + thisRowHeight
+        entry.EntryHeight = thisRowHeight
+
+        hBrush = CreateSolidBrush(IIf(isSelected, SELECTED_COLOR, IIf(entryIndex Mod 2 = 0, ROW_ALT_COLOR, BACKGROUND_COLOR)))
+        FillRect hdc, rowRect, hBrush
+        DeleteObject hBrush
+
+        SetBkMode hdc, 1
+        xPos = ScaleDesignPx(20)
+
+        For Each col In m_Columns
+            
+            ' use select case on col.name - add description - do a hack split into to lines to try the wrap 
+            ' in a more controlled manner
+            value = entry.Values(col.Name)
+            'WriteToDebugLogFile("      ucChanglog: DrawRow, entryIndex is " & entryIndex & " value: " & value)
+            
+            Dim lineXPos As Long = MulDiv(4, m_DPI_Horizontal, BASE_DPI)
+            Select Case UCase(col.Name)
+                Case "VERSION"
+                    SelectObject hdc, m_DefaultFont
+                    SetTextColor hdc, TEXT_COLOR_VERSION
+                    TextOut hdc, xPos + lineXPos, yPos + ScaleDesignPx(12), value, Len(value)
+                Case "TYPE"
+                    If Len(entry.TypeText) > 0 Then DrawTypeBadge(hdc, xPos, yPos + ScaleDesignPx(8), entry)
+                Case "DESCRIPTION"
+                    SelectObject hdc, m_DefaultFont
+                    SetTextColor hdc, TEXT_COLOR_DARK
+
+                    Dim lineYPos As Long = IIf(requiredLines < 2, yPos + ScaleDesignPx(12), yPos + ScaleDesignPx(6))
+                    
+                    Dim descrLine As String
+                    Dim eachLineHeight As Long = (thisRowHeight / (requiredLines + 1))
+                    For Each descrLine In descrLines
+                        ' write each line 
+                        TextOut hdc, xPos + lineXPos, lineYPos, descrLine, Len(descrLine)
+                        lineYPos = lineYPos + eachLineHeight
+                    Next
+                    
+                    Set descrLines = Nothing
+                Case Else
+                    SelectObject hdc, m_DefaultFont
+                    SetTextColor hdc, TEXT_COLOR_DARK
+                    TextOut hdc, xPos + lineXPos, yPos + ScaleDesignPx(12), value, Len(value)
+                Case Else
+                    
+            End Select
+
+            xPos = xPos + col.Width
+        Next
+        
+    End Sub
+
+    Private Sub DrawTypeBadge(ByVal hdc As Long, ByVal x As Long, ByVal y As Long, entry As clsChangeLogEntry)
+        
+        Dim badgeRect As RECT
+        Dim hBrush As Long
+        Dim textSize As Size
+        Dim badgeWidth As Long
+        Dim badgeHeight As Long = MulDiv(26, m_DPI_Vertical, BASE_DPI)
+        Dim textTopPos As Long
+        Dim textLeftPos As Long
+        Dim badgePaddingX As Long
+        Dim cornerRadius As Long
+        cornerRadius = MulDiv(8, m_DPI_Vertical, BASE_DPI)
+        
+        ' Calculate badge size and info to place the text centered in the badge
+        GetTextExtentPoint32 hdc, entry.TypeText, Len(entry.TypeText), textSize
+        badgePaddingX = MulDiv(8, m_DPI_Horizontal, BASE_DPI)
+        badgeWidth = textSize.cx + (badgePaddingX * 2)
+                
+        'badgeWidth = textSize.cx + 16
+    
+        ' Set badge rectangle
+        badgeRect.Left = x
+        badgeRect.Top = y
+        badgeRect.Right = x + badgeWidth
+        badgeRect.Bottom = y + badgeHeight
+    
+        ' Draw rounded rectangle background
+        hBrush = CreateSolidBrush(entry.TypeColor)
+        SelectObject hdc, hBrush
+        
+        ' use a radius based on the screen scaling 
+        RoundRect hdc, badgeRect.Left, badgeRect.Top, badgeRect.Right, badgeRect.Bottom, cornerRadius, cornerRadius   ' changing the border radius to be DPI aware as well
+        DeleteObject hBrush
+    
+        ' Draw badge text (white)
+        SetBkMode hdc, 1 ' TRANSPARENT
+        SetTextColor hdc, TEXT_COLOR_WHITE
+        SelectObject hdc, m_BadgeFont         ' make the font in the badge a little smaller
+        
+        textTopPos = badgeRect.Top + ((badgeHeight - textSize.cy) \ 2)  ' center the text name in the badge height
+        
+        ' center the text name in the badge width, it required a bit of a cludge ti get the text closer to the center
+        textLeftPos = badgeRect.Left + badgePaddingX + MulDiv(2, m_DPI_Horizontal, BASE_DPI)
+
+        TextOut hdc, textLeftPos, textTopPos, entry.TypeText, Len(entry.TypeText)
+        
+    End Sub
+
+    Private Sub m_Canvas_MouseDown(Button As Integer, Shift As Integer, x As Single, y As Single)
+        Dim clickedIndex As Long
+        Dim actualIndex As Long
+    
+        If Button = 1 Then ' Left click
+            clickedIndex = Int(y / m_DPIRowHeight) + m_ScrollOffset
+            actualIndex = GetFilteredEntryIndex(clickedIndex)
+        
+            If actualIndex <> -1 Then
+                m_SelectedIndex = actualIndex
+                RedrawCanvas
+                RaiseEvent ItemClick(actualIndex)
+            End If
+        End If
+    End Sub
+
+    Private Sub m_Canvas_DblClick()
+        If m_SelectedIndex <> -1 Then
+            RaiseEvent ItemDoubleClick(m_SelectedIndex)
+        End If
+    End Sub
+
+    Private Sub m_VScrollBar_Change()
+        m_ScrollOffset = m_VScrollBar.Value
+        RedrawCanvas
+    End Sub
+
+    Private Function GetFilteredEntryCount() As Long
+        Dim i As Long
+        Dim count As Long
+        Dim typeValue As String
+        
+        On Error Resume Next
+        typeValue = UCase(m_Entries(i).Values("TYPE"))
+        On Error GoTo 0
+        
+        For i = 0 To m_EntryCount - 1
+            If m_FilterType = "All" Or UCase(m_FilterType) = typeValue Then
+                count = count + 1
+            End If
+        Next i
+    
+        GetFilteredEntryCount = count
+    End Function
+
+    Private Function GetFilteredEntryIndex(ByVal displayIndex As Long) As Long
+        Dim i As Long
+        Dim count As Long
+        Dim typeValue As String
+        
+        On Error Resume Next
+        typeValue = UCase(m_Entries(i).Values("TYPE"))
+        On Error GoTo 0
+            
+        For i = 0 To m_EntryCount - 1
+            If m_FilterType = "All" Or UCase(m_FilterType) = typeValue Then
+                If count = displayIndex Then
+                    GetFilteredEntryIndex = i
+                    Exit Function
+                End If
+                count = count + 1
+            End If
+        Next i
+    
+        GetFilteredEntryIndex = -1
+    End Function
+
+    Public Sub AddEntry(ParamArray ColumnValues() As Variant)
+        
+        Dim entry As New clsChangeLogEntry
+        
+        ' Initialize the entry using current column definitions and incoming data
+        entry.Initialize m_Columns, ColumnValues
+
+        ' Add to entries array
+        ReDim Preserve m_Entries(m_EntryCount)
+        Set m_Entries(m_EntryCount) = entry
+        m_EntryCount = m_EntryCount + 1
+
+        'WriteToDebugLogFile("       ucChanglog: AddEntry,  count is " & m_EntryCount & "  data " & ColumnValues(0) & ", " & ColumnValues(1) & ", " & ColumnValues(2) & ", " & ColumnValues(3))
+        
+        UpdateScrollBar
+        RedrawCanvas
+    End Sub
+    
+    Private Sub UpdateScrollBar()
+
+        Dim filteredCount As Long
+        Dim visibleRows As Long
+    
+        filteredCount = GetFilteredEntryCount()
+        
+        ' check to see if the scrollbar is needed, if so convert the pixel row height to twips to calculate that
+        If Not m_Canvas Is Nothing Then
+            visibleRows = Int(ClientHeightPx(m_Canvas.hWnd) / m_DPIRowHeight)
+        End If
+    
+        If filteredCount > visibleRows Then
+            m_VScrollBar.Max = filteredCount - visibleRows
+            m_VScrollBar.Visible = True
+        Else
+            m_VScrollBar.Visible = False
+            m_ScrollOffset = 0
+        End If
+        
+        UpdateScrollOwnership m_Canvas.hWnd, (m_VScrollBar.Value * m_DPIRowHeight)
+        
+    End Sub
+
+    Public Sub ClearEntries()
+        ReDim m_Entries(0)
+        m_EntryCount = 0
+        m_SelectedIndex = -1
+        m_ScrollOffset = 0
+        UpdateScrollBar
+        RedrawCanvas
+    End Sub
+
+    Public Sub SetFilter(ByVal FilterType As String)
+        m_FilterType = FilterType
+        m_SelectedIndex = -1
+        m_ScrollOffset = 0
+        UpdateScrollBar
+        RedrawCanvas
+    End Sub
+        
+    Private Sub UserControl_Resize()
+        If Not m_Canvas Is Nothing Then
+            m_HeaderCanvas.Width = UserControl.ScaleWidth - SCROLL_WIDTH
+        
+            m_Canvas.Width = UserControl.ScaleWidth - SCROLL_WIDTH
+            m_Canvas.Height = UserControl.ScaleHeight - HEADER_HEIGHT
+        
+            m_VScrollBar.Left = UserControl.ScaleWidth - SCROLL_WIDTH
+            m_VScrollBar.Height = UserControl.ScaleHeight - HEADER_HEIGHT
+        
+            UpdateScrollBar
+            DrawHeaders
+            RedrawCanvas
+        End If
+    End Sub
+
+    ' Properties
+    Public Property Get Filter() As String
+        Filter = m_FilterType
+    End Property
+
+    Public Property Let Filter(ByVal Value As String)
+        SetFilter Value
+    End Property
+
+    Public Property Get EntryCount() As Long
+        EntryCount = m_EntryCount
+    End Property
+
+    Public Property Get SelectedIndex() As Long
+        SelectedIndex = m_SelectedIndex
+    End Property
+    
+    Public Sub HandleMouseScroll(ByVal zDelta As Long)
+
+        If Not m_VScrollBar.Visible Then Exit Sub
+
+        Dim direction As Long
+        direction = Sgn(zDelta)
+
+        Dim newVal As Long
+        newVal = m_VScrollBar.Value - direction
+
+        If newVal < m_VScrollBar.Min Then newVal = m_VScrollBar.Min
+        If newVal > m_VScrollBar.Max Then newVal = m_VScrollBar.Max
+
+        If newVal <> m_VScrollBar.Value Then
+            m_VScrollBar.Value = newVal
+            m_ScrollOffset = newVal
+            RedrawCanvas                 ' 8-1-25 modify scrolling to not redraw on every wheel roll
+            'KillTimer canvashWnd, DEBOUNCE_TIMER_ID
+            'SetTimer canvashWnd, DEBOUNCE_TIMER_ID, 120, AddressOf OnDebouncedScroll
+        End If
+    End Sub
+
+    Public Function WrapTextToLines(ByVal text As String, ByVal maxWidth As Long, ByVal hdc As Long) As Collection
+        
+        ' adding word wrap functionality to the ucChangeLog control
+        Dim words() As String
+        Dim line As String
+        Dim lines As New Collection
+        Dim i As Long
+        Dim testLine As String
+        Dim textSize As Size
+
+        words = Split(text, " ")
+        line = ""
+        
+        For i = LBound(words) To UBound(words)
+            If Len(line) = 0 Then
+                testLine = words(i)
+            Else
+                testLine = line & " " & words(i)
+            End If
+            
+            GetTextExtentPoint32 hdc, testLine, Len(testLine), textSize
+            
+            If textSize.cx <= maxWidth Then
+                line = testLine
+            Else
+                If Len(line) > 0 Then lines.Add line
+                line = words(i)
+            End If
+        Next i
+
+        If Len(line) > 0 Then lines.Add line
+
+        Set WrapTextToLines = lines
+    End Function
+    
+    Private Sub UserControl_Terminate()
+        
+        ' have to release things when destorying the control
+        If canvashWnd <> 0 And OriginalCanvasProc <> 0 Then
+            Call SetWindowLong(canvashWnd, GWL_WNDPROC, OriginalCanvasProc)
+            canvashWnd = 0
+            OriginalCanvasProc = 0
+        End If
+        
+    End Sub
+    
+End Class

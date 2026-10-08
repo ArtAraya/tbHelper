@@ -1,0 +1,2333 @@
+[Description("")]
+[FormDesignerId("8CA8AA1D-C672-4662-A724-D05EB1E09148")]
+[PredeclaredId]
+Class Form1
+    Dim loadingSettingsFromFile As Boolean
+    Dim activeTypeFilters As Scripting.Dictionary
+    Dim buttonCaption As String = vbNullChar
+    Dim revertGetGitHubVersionsClicked As Boolean
+    
+    Public isAPanelDisplayed As Boolean = False
+    Dim formIsClosing As Boolean = False
+    
+    ' Design-time message-box layout, captured once so later dialogs can shrink back
+    Private m_msgLayoutSaved As Boolean
+    Private m_msgInnerW As Long
+    Private m_msgInnerH As Long
+    Private m_msgRtfW As Long
+    Private m_msgRtfH As Long
+    Private m_msgTitleW As Long
+    Private m_msgBtn1Left As Long
+    Private m_msgBtn2Left As Long
+    Private m_msgBtn3Left As Long
+    Private m_msgBtnTop As Long
+    
+    Private Const CheckForVersion As String = "Check for new version"
+    Private Const DownLoadVersion As String = "Download version"
+    Private Const InstalledVersion As String = "Installed version: "
+
+    ' colors for the type of change log item      the names came from this site https://colornamer.robertcooper.me/
+    Private Const COLOR_IMPORTANT = &HA2640C          ' Raw Umber  (orange/yellow)
+    Private Const COLOR_IMPROVED = RGB(107, 142, 35)  ' Scallion  (light green)
+    Private Const COLOR_FIXED = RGB(56, 118, 29)      ' Forest Empress  (darker green)
+    Private Const COLOR_UPDATED = RGB(107, 45, 103)   ' Intense Mauve 
+    Private Const COLOR_TIP = RGB(22, 83, 126)        ' Lake Baikal (blue/grey)
+    Private Const COLOR_DEFAULT = &H808080            ' standard Grey
+    Private Const COLOR_KNOWN = vbBlack
+    Private Const COLOR_ADDED = RGB(75, 0, 130)       ' Indigo (purple)
+    Private Const COLOR_WARNING = RGB(153, 0, 0)      ' Crimson Red 
+    Private Const COLOR_CHANGED = RGB(198, 79, 55)    ' Burnt Sienna  (Trinidad)
+    Private Const COLOR_NOTE = RGB(72, 61, 139)       ' Nauseous Blue
+    
+    ' calc font size for dropdown drive list infor
+    Private drop_DPIFontSize As Integer
+    Private Const TEXT_BASE_FONT_SIZE = 9.75
+
+    Private Const MAX_FONT_SIZE As Long = 13
+    Private Const BASE_DPI = 96
+        
+    Private Sub Form_Load()
+        Dim folderPic As StdPicture
+        
+        On Error GoTo FormLoadFailed
+        StartupTrace "Form_Load enter"
+        
+        StartupTrace "Form_Load create fso"
+        Set fso = New FileSystemObject
+        On Error Resume Next
+        If fso.FileExists(App.Path & "\debug_log.txt") Then fso.DeleteFile(App.Path & "\debug_log.txt")
+        If Err.Number <> 0 Then StartupTraceError "Form_Load delete debug_log"
+        On Error GoTo FormLoadFailed
+        
+        StartupTrace "Form_Load LoadImages"
+        LoadImages
+        StartupTrace "Form_Load folder icons"
+        Set folderPic = GetImageStd(resFolderClosed)
+        If Not folderPic Is Nothing Then Set FolderList.FolderClosedIcon = folderPic
+        Set folderPic = Nothing
+        Set folderPic = GetImageStd(resFolderOpen)
+        If Not folderPic Is Nothing Then Set FolderList.FolderOpenIcon = folderPic
+        Set folderPic = Nothing
+        If Err.Number <> 0 Then StartupTraceError "Form_Load folder icons"
+        
+        ' Skip the resource dump when this is an elevated resume: the old instance
+        ' may still have those files open and Open For Append raises error 70.
+        StartupTrace "Form_Load EnumerateAllResources"
+        If InStr(1, Command$, "/resume", vbTextCompare) = 0 Then
+            EnumerateAllResources
+        End If
+                
+        StartupTrace "Form_Load caption"
+        Me.Caption = "tBHelper (RC1 12-22-25)"
+        
+        'WriteToDebugLogFile "Form load"
+        
+        StartupTrace "Form_Load clsSettings"
+        loadingSettingsFromFile = True
+        Set tbHelperSettings = New clsSettings
+        
+        ' configure the custom controls on the main form
+        StartupTrace "Form_Load SetupTypeFilterButtons"
+        SetupTypeFilterButtons
+
+        StartupTrace "Form_Load SetupSettingsToggleSliders"
+        SetupSettingsToggleSliders
+
+        StartupTrace "Form_Load SetChangeLogHeader"
+        SetChangeLogHeader
+          
+        StartupTrace "Form_Load Show"
+        Me.Show
+        Me.MousePointer = vbHourglass
+        
+        Set activeTypeFilters = New Scripting.Dictionary
+        Set activityLog = actLog
+        
+        ' check for local html used while debugging
+        If fso.FileExists(App.Path & "\GitHubReleasesPage.html") Then
+            UpdateActivityLog "** using local html file **"
+        End If
+        
+        UpdateActivityLog "Checking for Settings file"
+        
+        If tbHelperSettings.SettingsFileLoaded Then
+            StartupTrace "Form_Load LoadSettingsIntoForm"
+            LoadSettingsIntoForm()
+            UpdateActivityLog "loaded", True
+        Else
+            UpdateActivityLog "Not found", True
+            UpdateActivityLog "Find user download location and tB location"
+            
+            ' if there isn't a settings file, then use the users default download path and attempt to find twinBASIC's path
+            StartupTrace "Form_Load GetLocalFolders"
+            GetLocalFolders
+            
+            txtDownloadFolder.Text = tbHelperSettings.DownloadFolder.Path
+            txttBFolderLocation.Text = tbHelperSettings.twinBASICFolder.Path
+            
+            If Not tbHelperSettings.twinBASICFolder.IsValid Then
+                MessageBox("No twinBASIC folder found.", "info", "Auto find twinBASIC")
+            End If
+        End If
+
+        loadingSettingsFromFile = False
+       
+        StartupTrace "Form_Load SetupCustomButtons"
+        SetupCustomButtons
+        
+        txtDownloadFolder.SetValidView(tbHelperSettings.DownloadFolder.IsValid, "Folder does not exisit")
+        txttBFolderLocation.SetValidView(tbHelperSettings.twinBASICFolder.IsValid, "Folder does not exisit")
+        
+        If tbHelperSettings.twinBASICFolder.IsValid Then
+            ' the tb folder is fine, display the version contained in the folder
+            lblCurrentTBVersion.Visible = True
+            lblCurrentTBVersion.Caption = InstalledVersion & " " & tbHelperSettings.twinBASICFolder.tBVersion
+        End If
+        
+        ' enable or disable view log button
+        'WriteToDebugLogFile "  Form load set btnViewLogHistory.Enabled "
+        btnViewLogHistory.Enabled = fso.FileExists(App.Path & "\log.txt")
+        
+        Dim resumeSwitch As String
+        Dim resumeZip As String
+        Dim isResume As Boolean
+        isResume = ParseResumeCommand(resumeSwitch, resumeZip)
+        
+        ' this continues to check for version info if the folders are valid
+        If Not isResume Then
+            If tbHelperSettings.CheckForNewVersionOnLoad Then
+                StartupTrace "Form_Load CheckForNewVersion"
+                CheckForNewVersion
+                
+                ' checking if there are change logs means there is at least 1 new version available
+                If chgLogs.Count > 0 Then
+                    ' turn on the available toggles for the filters
+                    SetInitialTypeFilters()
+                Else
+                    ' no change log means no new version
+                    SetDownloadButtonToCheckForVersion
+                End If
+            Else
+                ' settings say don't check for a newer version on load
+                'WriteToDebugLogFile "  Form load set btnDownload Caption and Icon "
+                SetDownloadButtonToCheckForVersion
+            End If
+        Else
+            SetDownloadButtonToCheckForVersion
+        End If
+        
+        EnableDownloadButton()
+        
+        StartupTrace "Form_Load FlushRedraws"
+        FlushRedraws
+        
+        StartupTrace "Form_Load CalculateDPIValues"
+        CalculateDPIValues
+        
+        Me.MousePointer = vbDefault
+        
+        If isResume Then
+            StartupTrace "Form_Load FinishResumeOperation"
+            On Error Resume Next
+            FinishResumeOperation resumeSwitch, resumeZip
+            If Err.Number <> 0 Then StartupTraceError "Form_Load FinishResumeOperation"
+            On Error GoTo FormLoadFailed
+        End If
+        
+        StartupTrace "Form_Load leave"
+        Exit Sub
+        
+FormLoadFailed:
+        StartupTraceError "Form_Load"
+        Me.MousePointer = vbDefault
+    End Sub
+
+    Private Sub Form_Click()
+        
+        ' if one of the panels with a dropdown is displayed and the form is clicked
+        ' hide the dropdown
+        If isAPanelDisplayed Then
+            HideDateList
+            HideZipList
+            HideDriveList
+        End If
+        
+    End Sub
+    
+    Private Sub Form_Unload(Cancel As Integer)
+
+        formIsClosing = True
+        
+        On Error Resume Next
+        If Not tbHelperSettings Is Nothing Then
+            If tbHelperSettings.SettingsChanged And tbHelperSettings.SaveSettingsOnExit Then tbHelperSettings.SaveSettings()
+            If tbHelperSettings.LogActivity Then WriteToLogFile
+        End If
+        On Error GoTo 0
+
+        Set tbHelperSettings = Nothing
+        Set activeTypeFilters = Nothing
+        
+        Set fso = Nothing
+        
+    End Sub
+    
+    Private Sub btnDownload_Click()
+        
+        ' any panel displaying on the for, ignore this click
+        If isAPanelDisplayed Then Exit Sub
+        
+        ' is the download button captioned to check for which version is available on GitHub
+        Me.MousePointer = vbHourglass
+        If btnDownload.Caption = CheckForVersion Then
+            UpdateActivityLog "Manual check for new version"
+            
+            chgLogs.GetNewerReleasedVersions(tbHelperSettings.twinBASICFolder.tBVersion)
+        
+            ' the result of checking is that no new version is available at this time
+            If chgLogs.versionCheckResult = "Latest version already installed" Then
+                UpdateActivityLog "none available", True
+            Else
+                FilltBChangeLog
+                SetInitialTypeFilters
+
+                UpdateActivityLog "Version " & chgLogs.LatestVersion & " is available"
+                'WriteToDebugLogFile "  btnDownload Click set btnDownload caption and icon "
+                btnDownload.Caption = "Download version " & chgLogs.LatestVersion
+                btnDownload.ButtonImagePtr = GetImagePtr(resDownload)
+                
+            End If
+        
+            Me.MousePointer = vbDefault
+            'WriteToDebugLogFile("Form1 - btnDownload: exiting")
+            
+        Else
+    
+            ' use the version number to download the latest release
+            ' example of the dowmload url: https://github.com/twinbasic/twinbasic/releases/download/beta-x-0641/twinBASIC_IDE_BETA_641.zip
+            Dim newReleaseURL As String = githubReleasesURL & "/download/beta-x-" & IIf(chgLogs.LatestVersion < 1000, "0" & CStr(chgLogs.LatestVersion), chgLogs.LatestVersion)
+            Dim justTheFileName As String = "twinBASIC_IDE_BETA_" & chgLogs.LatestVersion & ".zip"
+            Dim localZipFileName As String = txtDownloadFolder.Text & justTheFileName
+            Dim downloadTheZip As Boolean = True
+        
+            'WriteToDebugLogFile("Form1 - btnDownload: Click as Download function")
+            If fso.FileExists(localZipFileName) Then
+                Me.MousePointer = vbDefault
+                
+                'WriteToDebugLogFile "file exisits"
+                ' the zip has been downloaded already
+                UpdateActivityLog "The zip exists in the download folder, redownload it?"
+                'WriteToDebugLogFile "show the message form"
+                
+                FlushRedraws ' refesh the button to allow it to process anything it needs to do()
+                DoEvents
+                
+                Dim msgResponse As String = MessageBox("The file [font color=rgb(4, 55, 242)]'" & localZipFileName & "'[/font] already exists. Download it again? [i](if no, then the current file will be used)[/i]", _
+                                                "Question", "Previously Downloaded", "Yes", "No", "Cancel")
+                'WriteToDebugLogFile "returned from message form, response was " & msgResponse
+                
+                downloadTheZip = False
+                Select Case msgResponse
+                    Case vbNullChar, "Cancel"   ' closed the message with X button or clicked cancel
+                        UpdateActivityLog "The process has been cancelled by the user."
+                        'WriteToDebugLogFile "Exit btnDownload Click as the operation was cancelled by the user."
+                        Exit Sub
+                    Case "No" ' no don't download
+                        downloadTheZip = False
+                    Case "Yes"  ' yes download the zip again
+                        downloadTheZip = True
+                End Select
+                
+                'WriteToDebugLogFile "a button was selected"
+                If downloadTheZip Then
+                    fso.DeleteFile(localZipFileName)
+                    UpdateActivityLog "Deleted the previous zip file " & localZipFileName, False
+                End If
+                Me.MousePointer = vbHourglass
+            End If
+
+            UpdateActivityLog IIf(downloadTheZip, "Yes", "No"), True
+            If downloadTheZip Then
+                UpdateActivityLog "Downloading twinBasic " & chgLogs.LatestVersion
+                URLDownloadToFile 0, newReleaseURL & "/" & justTheFileName, localZipFileName, 0, 0
+                UpdateActivityLog "done ", True
+            End If
+        
+            If formIsClosing Then Exit Sub
+            If ProcessDownloadedZip(localZipFileName) Then
+                If formIsClosing Then Exit Sub
+        
+                UpdateActivityLog "process complete"
+
+                ' after the latest has been downloaded, set the download button to a manual check
+                'WriteToDebugLogFile "Update btnDownlod to say 'Check for new version'"
+                SetDownloadButtonToCheckForVersion
+                
+                ' if the option to auto unzip the file is selected, check to make sure the files in the tB folder are the new version
+                ' before changing the version info on the form
+                If tbHelperSettings.PostDownloadAction = 3 And GetTBVersionInFolder(txttBFolderLocation.Text) = chgLogs.LatestVersion Then
+                    lblCurrentTBVersion.Caption = InstalledVersion & chgLogs.LatestVersion
+                    lblCurrentTBVersion.Visible = True
+                End If
+            End If
+            
+        End If
+        
+        If formIsClosing Then Exit Sub
+        FlushRedraws
+        Me.MousePointer = vbDefault
+         
+    End Sub
+    
+    Private Sub btnSelectDownloadFolder_Click()
+        
+        ' check for a panel already displayed
+        If isAPanelDisplayed Then Exit Sub
+        
+        ConfigureSelectFolderButtons()
+                
+        ' Populate the drives listbox and set the initial selection
+        PopulateDrivesList
+        
+        ' if there are drives found and there isn't a previous selection that needs to be highlighted
+        If lstDrives.ListCount > 0 And Len(txtDownloadFolder.Text) = 0 Then
+            lstDrives.ListIndex = 0
+            DrivePicker.Item = lstDrives.Text
+            
+            ' Explicitly populate the folder list with the initial drive.
+            ' This ensures it happens after the drive is set and the control is ready.
+            FolderList.ShowDrive DrivePicker.Item
+            
+        ElseIf Len(txtDownloadFolder.Text) > 0 Then
+            ' highlight the passed SelectedPath
+            Dim previousDrive As String = Left(txtDownloadFolder.Text, 2)
+            
+            If DoesDriveExist(previousDrive) Then
+                DrivePicker.Item = previousDrive ' select the drive in the dropdown
+                FolderList.Path = txtDownloadFolder.Text
+            Else
+                DrivePicker.Item = "C:"
+                FolderList.Path = "\"
+            End If
+            
+            FolderList.ShowDrive DrivePicker.Item    ' make sure that drive's folders are listed
+        End If
+        
+        ShowPanelView frmInnerSelectFolder
+        lblSelectFolderTitle.Caption = "Select a download folder"
+        
+        FlushRedraws
+
+        'FolderList.SetFocus()
+        'FolderList.Refresh()
+    End Sub
+    
+    Private Sub btnSelecttBFolderLocation_Click()
+        
+        ' check for a panel already displayed
+        If isAPanelDisplayed Then Exit Sub
+        
+        ConfigureSelectFolderButtons()
+                
+        ' Populate the drives listbox and set the initial selection
+        PopulateDrivesList
+        
+        ' if there are drives found and there isn't a previous selection that needs to be highlighted
+        If lstDrives.ListCount > 0 And Len(txttBFolderLocation.Text) = 0 Then
+            lstDrives.ListIndex = 0
+            DrivePicker.Item = lstDrives.Text
+            
+            ' Explicitly populate the folder list with the initial drive.
+            ' This ensures it happens after the drive is set and the control is ready.
+            FolderList.ShowDrive DrivePicker.Item
+            
+        ElseIf Len(txttBFolderLocation.Text) > 0 Then
+            Dim previousDrive As String = Left(txttBFolderLocation.Text, 2)
+            
+            If DoesDriveExist(previousDrive) Then
+                DrivePicker.Item = previousDrive ' select the drive in the dropdown
+                FolderList.Path = txttBFolderLocation.Text
+            Else
+                DrivePicker.Item = "C:"
+                FolderList.Path = "\"
+            End If
+            
+            FolderList.ShowDrive DrivePicker.Item    ' make sure that drive's folders are listed            
+        End If
+        
+        ShowPanelView frmInnerSelectFolder
+        lblSelectFolderTitle.Caption = "Select a twinBASIC folder"
+        
+        FlushRedraws
+
+    End Sub
+    
+    Private Sub optOpenFolder_Click()
+        
+        ' if just opening the folder, you can't launch the new twinBASIC
+        If loadingSettingsFromFile Then Exit Sub
+        
+        tsStartTB.IsOn = False
+        tsStartTB.Enabled = False
+        
+        tbHelperSettings.PostDownloadAction = 1
+        
+        ' is the form reaf to download the zip file
+        EnableDownloadButton
+        FlushRedraws
+    End Sub
+    
+    Private Sub optOpenZip_Click()
+        
+        ' if just opening the zip, you can't launch the new twinBASIC
+        If loadingSettingsFromFile Then Exit Sub
+        
+        tsStartTB.IsOn = False
+        tsStartTB.Enabled = False
+                
+        tbHelperSettings.PostDownloadAction = 2
+        
+        ' is the form reaf to download the zip file
+        EnableDownloadButton
+        FlushRedraws
+    End Sub
+    
+    Private Sub optInstallTB_Click()
+        
+        If loadingSettingsFromFile Then Exit Sub
+
+        ' warn the user of the process involved in installing the latest twinBASIC version
+        If Not loadingSettingsFromFile Then _ 
+            MessageBox("Selecting this option will replace the files in the twinBASIC folder with the downloaded version.", "warning", "Warning")
+    
+        tbHelperSettings.PostDownloadAction = 3
+        
+        ' is the form ready to download the zip file
+        EnableDownloadButton
+        FlushRedraws
+    End Sub
+
+    Private Sub tfAdded_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfAdded, Active
+        
+    End Sub
+
+    Private Sub tfFixed_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfFixed, Active
+    End Sub
+    
+    Private Sub tfImportant_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfImportant, Active
+    End Sub
+
+    Private Sub tfImproved_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfImproved, Active
+    End Sub
+    
+    Private Sub tfKnown_Issue_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfKnown_Issue, Active
+    End Sub
+    
+    Private Sub tfTip_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfTip, Active
+    End Sub
+    
+    Private Sub tfUpdated_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfUpdated, Active
+    End Sub
+    
+    Private Sub tfWarning_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfWarning, Active
+    End Sub
+    
+    Private Sub tfNote_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfNote, Active
+    End Sub
+    
+    Private Sub tfChanged_StateChanged(ByVal Active As Boolean)
+        RefreshChangeLog tfChanged, Active
+    End Sub
+    
+    Private Sub tsStartTB_StateChanged(ByVal NewState As Boolean)
+        ' check for the message box displaying
+        If isAPanelDisplayed Then Exit Sub
+        
+        tbHelperSettings.StarttwinBASICAfterUpdate = NewState
+        FlushRedraws
+    End Sub
+    
+    Private Sub tsLogActivity_StateChanged(ByVal NewState As Boolean)
+        ' check for the message box displaying
+        If isAPanelDisplayed Then Exit Sub
+        
+        tbHelperSettings.LogActivity = NewState
+        FlushRedraws
+    End Sub
+    
+    Private Sub tsLookForUpdateAtLaunch_StateChanged(ByVal NewState As Boolean)
+        ' check for the message box displaying
+        If isAPanelDisplayed Then Exit Sub
+        
+        tbHelperSettings.CheckForNewVersionOnLoad = NewState
+        FlushRedraws
+    End Sub
+
+    Private Sub tsSaveSettingsOnExit_StateChanged(ByVal NewState As Boolean)
+        ' check for the message box displaying
+        If isAPanelDisplayed Then Exit Sub
+        
+        tbHelperSettings.SaveSettingsOnExit = NewState
+        FlushRedraws
+    End Sub
+    
+    Private Sub txtDownloadFolder_LostFocus()
+        
+        ' check for the message box displaying or the form is closing
+        If isAPanelDisplayed Or formIsClosing Then Exit Sub
+        
+        If fso.FolderExists(txtDownloadFolder.Text) Then
+            ' complete the path
+            If Right(txtDownloadFolder.Text, 1) <> "\" Then txtDownloadFolder.Text += "\"
+
+            tbHelperSettings.DownloadFolder.Path = txtDownloadFolder.Text
+            txtDownloadFolder.SetValidView(True)
+            
+        Else
+            ' indicate an invalid selection
+            txtDownloadFolder.SetValidView(False, "Folder does not exisit")
+        End If
+        
+        EnableDownloadButton()
+        
+        FlushRedraws
+    End Sub
+    
+    Private Sub txttBFolderLocation_LostFocus()
+        
+        ' check for the message box displaying
+        If isAPanelDisplayed Or formIsClosing Then Exit Sub
+        
+        Dim newtBLocationFolder As Boolean = False
+        Dim previousPath As String = tbHelperSettings.twinBASICFolder.Path
+                
+        ' if there is a folder name in the textbox and folder doesn't exist, create it?
+        If Not fso.FolderExists(txttBFolderLocation.Text) And Not Trim(txttBFolderLocation.Text) = "" Then
+            ' ask the user if the folder should be created (like a first time setup)
+            If MessageBox("This folder doesn't exist. Should it be created?", "question", "twinBASIC Location", "Yes", "No") = "Yes" Then
+                On Error Resume Next
+                fso.CreateFolder(txttBFolderLocation.Text)
+                If Not fso.FolderExists(txttBFolderLocation.Text) Then
+                    UpdateActivityLog "Unable to create the twinBASIC folder " & txttBFolderLocation.Text & " as requested"
+                    MessageBox("Unable to create the folder." & vbCrLf & Err.Description, "error", "Creation Error")
+                    txttBFolderLocation.SetValidView(False, "Folder cold not be created")
+                    txttBFolderLocation.SetFocus()
+                Else
+                    tbHelperSettings.twinBASICFolder.Path = txttBFolderLocation.Text
+                    tbHelperSettings.twinBASICFolder.ForceValid
+                    
+                    txttBFolderLocation.SetValidView(True)
+                    lblCurrentTBVersion.Caption = InstalledVersion & " N/A"
+                    newtBLocationFolder = True
+                    UpdateActivityLog "The twinBASIC folder " & txttBFolderLocation.Text & " was created"
+                End If
+                On Error GoTo 0
+            End If
+        End If
+        
+        Me.MousePointer = vbHourglass
+        
+        ' is the folder to install twinBASIC to valid?
+        If Not newtBLocationFolder Then
+            ' the user didn't create a new tBFolder
+            'WriteToDebugLogFile("Lost focus - checking folder for its tB version")
+            If fso.FolderExists(txttBFolderLocation.Text) Then
+            
+                ' complete the path
+                If Right(txttBFolderLocation.Text, 1) <> "\" Then txttBFolderLocation.Text += "\"
+                
+                Dim prevInstalledVersion As Integer = tbHelperSettings.twinBASICFolder.tBVersion
+                
+                tbHelperSettings.twinBASICFolder = txttBFolderLocation.Text
+                
+                'WriteToDebugLogFile("Lost focus - GetTBVersionInFolder returned " & tbHelperSettings.twinBASICFolder.tBVersion)
+                If tbHelperSettings.twinBASICFolder.tBVersion = 0 Then
+                    ' indicate an invalid selection
+                    lblCurrentTBVersion.Caption = ""
+                    txttBFolderLocation.SetValidView(False, "Folder does not contain twinBASIC")
+                
+                    MessageBox("Folder [font color=vbBlue]'" & txttBFolderLocation.Text & "' [/font]; no twinBASIC version found.", "info", "twinBASIC version check")
+                Else
+                    
+                    If Not txttBFolderLocation.IsViewValid Then txttBFolderLocation.SetValidView(True)
+                    
+                    ' this didn't update the label properly (maybe need a custom control for it)
+                    lblCurrentTBVersion.Caption = InstalledVersion & tbHelperSettings.twinBASICFolder.tBVersion
+                    'InvalidateRect(Form1.hWnd, 0, 1)
+                    'UpdateWindow(Form1.hWnd)
+                    
+                    'WriteToDebugLogFile("label updated and queued (" & Form1.hWnd & ") form for redraw (" & lblCurrentTBVersion.Caption & ")")
+                                        
+                    If prevInstalledVersion <> tbHelperSettings.twinBASICFolder.tBVersion Then
+                        ' a new location with twinBASIC was selected, if the setting for check for a new version on load then check
+                        
+                        If FoldersAreValid Then
+                            
+                            If tbHelperSettings.CheckForNewVersionOnLoad Then
+                                CheckForNewVersion
+                            Else
+                                SetDownloadButtonToCheckForVersion
+                            End If
+                        End If
+                        
+                    End If
+                    
+                    'tbHelperSettings.twinBASICFolder.Path = txttBFolderLocation.Text
+                End If
+                
+                
+            Else
+                ' indicate an invalid selection
+                lblCurrentTBVersion.Caption = ""
+                txttBFolderLocation.SetValidView(False, "Folder does not exisit")
+            End If
+                        
+        End If
+        
+        InvalidateLabelRegion lblCurrentTBVersion
+        
+        FlushRedraws()
+        
+        Me.MousePointer = vbDefault
+ 
+        EnableDownloadButton
+        FlushRedraws()
+        
+    End Sub
+    
+    '**************************************
+    '   local procedures
+    '**************************************** 
+    Private Sub CheckForNewVersion()
+        
+        ' should tBHelper look for a newer version?
+        UpdateActivityLog "Checking for new version"
+        chgLogs.GetNewerReleasedVersions(tbHelperSettings.twinBASICFolder.tBVersion, True)
+            
+        If chgLogs.tBVersionGap > 0 Then
+            ' there is at least 1 new version available
+            btnDownload.Caption = "Download version " & chgLogs.LatestVersion
+            btnDownload.ButtonImagePtr = GetImagePtr(resDownload)
+            FilltBChangeLog()
+            UpdateActivityLog "Newest version available is " & chgLogs.LatestVersion
+        Else
+            UpdateActivityLog "No newer version available"
+        End If
+           
+        EnableDownloadButton
+        
+    End Sub
+    
+    Private Sub ConfigureToggleSlider(tsToggle As ucToggleSlider)
+        
+        tsToggle.OnColor = CUST_BTN_BCOLOR
+        tsToggle.SlideSpeed = 3
+        
+    End Sub
+    
+    Private Sub ConfigureTypeFilterButton(tfButton As ucTypeFilter, buttonCaption As String, buttonBackColor As Long, Optional FilterText As String = "")
+        
+        If FilterText = "" Then FilterText = buttonCaption
+        
+        tfButton.BorderRadius = 3
+        tfButton.TypeName = buttonCaption
+        tfButton.FilterText = FilterText
+        tfButton.WidthOverride = 1065
+        tfButton.Backcolor = buttonBackColor
+        tfButton.FontSize = 9.75
+        tfButton.Enabled = False
+        
+    End Sub
+    
+    Private Sub EnableDownloadButton()
+
+        ' should the download zip button be enabled?
+        'WriteToDebugLogFile "EnableDownloadButton FoldersAreValid " & FoldersAreValid & "; chgLogs.tBVersionGap: " & chgLogs.tBVersionGap & " btnDownload.Caption='" & btnDownload.Caption & "'"
+        
+        ' the download and the twinBASIC folder are valid 
+        ' and (there is a difference between the available version and the installed version or the button is set to manually check for a new version)
+        btnDownload.Enabled = FoldersAreValid And (chgLogs.tBVersionGap > 0 Or btnDownload.Caption = CheckForVersion)
+        
+        If btnDownload.Enabled Then
+            ' add the final forward slash if needed
+            If Right(txtDownloadFolder.Text, 1) <> "\" Then txtDownloadFolder.Text += "\"
+            If Right(txttBFolderLocation.Text, 1) <> "\" Then txttBFolderLocation.Text += "\"
+        End If
+        
+    End Sub
+    
+    Public Sub FilltBChangeLog()
+        
+        ' inital write of entries to the changelog 
+        Dim clItem As clsChangeLogItem
+        
+        lblNewVersions.Caption = ""
+         'WriteToDebugLogFile("FilltBChangeLog versoin gap:" & chgLogs.tBVersionGap)
+        If chgLogs.tBVersionGap > 1 Then
+           
+            Label9.Caption = "Change logs for "
+            lblNewVersions.Caption = CStr(tbHelperSettings.twinBASICFolder.tBVersion + 1) & IIf(chgLogs.tBVersionGap = 2, " and ", " thru ") & chgLogs.LatestVersion
+            
+        ElseIf chgLogs.tBVersionGap = 1 Then
+            Label9.Caption = "Change Log for "
+            lblNewVersions.Caption = chgLogs.LatestVersion
+        Else
+            Label9.Caption = "Change Log"
+        End If
+        
+        clgView.Clear
+        
+        clgView.BeginUpdate()
+        For Each clItem In chgLogs
+            clgView.AddEntry(clItem.tBVersion, clItem.Type, clItem.Notes)
+        Next
+        clgView.EndUpdate()
+        
+    End Sub
+    Private Function FoldersAreValid() As Boolean
+    
+         Return tbHelperSettings.DownloadFolder.IsValid And tbHelperSettings.twinBASICFolder.IsValid
+        
+    End Function
+    
+    Private Sub LoadSettingsIntoForm()
+    
+        'Set the controls on the form with their settings values
+        With Form1
+            .txtDownloadFolder.Text = tbHelperSettings.DownloadFolder.Path
+            .txttBFolderLocation.Text = tbHelperSettings.twinBASICFolder.Path
+            Select Case tbHelperSettings.PostDownloadAction
+                Case 1
+                    .optOpenFolder.Value = True
+                Case 2
+                    .optOpenZip.Value = True
+                Case 3
+                    .optInstallTB.Value = True
+            End Select
+            .tsLookForUpdateAtLaunch.IsOn = tbHelperSettings.CheckForNewVersionOnLoad
+            .tsStartTB.IsOn = tbHelperSettings.StarttwinBASICAfterUpdate
+            .tsLogActivity.IsOn = tbHelperSettings.LogActivity
+            .tsSaveSettingsOnExit.IsOn = tbHelperSettings.SaveSettingsOnExit
+        End With
+    
+    End Sub
+
+    Private Function InstallTwinBasic(tBZipFile As String, Optional ByVal resumeAction As String = "/resumeInstall") As Boolean
+        
+        ' Extract to a temp folder first, then replace files in the destination.
+        ' Never delete the destination folder itself: under Program Files a
+        ' non-admin user can often delete the folder but cannot recreate it.
+        Dim destPath As String
+        Dim parentPath As String
+        Dim tempPath As String
+        Dim destExists As Boolean
+        Dim unzipped As Boolean
+        Dim errMsg As String
+    
+        On Error GoTo ErrorUnZiping
+    
+        g_ElevationAbortQuiet = False
+        g_ElevationRelaunchStarted = False
+        destPath = tbHelperSettings.twinBASICFolder.Path
+        parentPath = GettBParentFolder()
+        destExists = fso.FolderExists(destPath)
+    
+        If destExists Then
+            Select Case ProbeDestWriteAccess(destPath)
+                Case WRITEPROBE_OK
+                    ' this process can replace the installed files
+                Case WRITEPROBE_SHARING
+                    UpdateActivityLog "Cannot replace " & destPath & " (twinBASIC.exe is in use)"
+                    MessageBox("twinBASIC.exe is in use in [font color=vbblue]'" & destPath & "'[/font]." & vbCrLf & _
+                        "Close twinBASIC and try again. The folder was not changed.", _
+                        "warning", "twinBASIC is running")
+                    Exit Function
+                Case Else
+                    If AbortInstallForWriteAccess(destPath, tBZipFile, resumeAction) Then Exit Function
+            End Select
+        Else
+            If Not FolderAllowsCreateSubfolder(parentPath) Then
+                If AbortInstallForWriteAccess(destPath, tBZipFile, resumeAction) Then Exit Function
+            End If
+        End If
+    
+        tempPath = NormalizeFolderPath(fso.GetSpecialFolder(2).Path) & "tbHelper_extract_" & Format(Now, "yyyymmddhhnnss")
+        fso.CreateFolder tempPath
+    
+        With New cZipArchive
+            If Not .OpenArchive(tBZipFile) Then
+                fso.DeleteFolder tempPath, True
+                MessageBox("Unable to open the zip file [font color=vbblue]'" & tBZipFile & "'[/font].", "error", "Error Unzipping twinBASIC")
+                Exit Function
+            End If
+            unzipped = .Extract(tempPath)
+        End With
+    
+        If Not unzipped Then
+            If fso.FolderExists(tempPath) Then fso.DeleteFolder tempPath, True
+            MessageBox("Unable to extract [font color=vbblue]'" & tBZipFile & "'[/font] to a temporary folder.", "error", "Error Unzipping twinBASIC")
+            Exit Function
+        End If
+    
+        If destExists Then
+            If Not ClearFolderContents(destPath) Then
+                If OfferElevationAfterReplaceFailed(destPath, tBZipFile, resumeAction, tempPath) Then Exit Function
+                MessageBox("Could not replace files in [font color=vbblue]'" & destPath & "'[/font]. The folder itself was not removed." & vbCrLf & _
+                    "The extracted files are still in [font color=vbblue]'" & tempPath & "'[/font].", _
+                    "error", "Error Unzipping twinBASIC")
+                Exit Function
+            End If
+        Else
+            If Not EnsureFolderExists(destPath) Then
+                If OfferElevationAfterReplaceFailed(destPath, tBZipFile, resumeAction, tempPath) Then Exit Function
+                MessageBox("Could not create [font color=vbblue]'" & destPath & "'[/font].", "error", "Error Unzipping twinBASIC")
+                Exit Function
+            End If
+        End If
+    
+        If Not CopyFolderContents(tempPath, destPath) Then
+            If OfferElevationAfterReplaceFailed(destPath, tBZipFile, resumeAction, tempPath) Then Exit Function
+            MessageBox("Extracted files could not be copied to [font color=vbblue]'" & destPath & "'[/font]." & vbCrLf & _
+                "The extracted files are still in [font color=vbblue]'" & tempPath & "'[/font].", _
+                "error", "Error Unzipping twinBASIC")
+            Exit Function
+        End If
+    
+        If fso.FolderExists(tempPath) Then fso.DeleteFolder tempPath, True
+    
+        InstallTwinBasic = fso.FolderExists(destPath)
+        Exit Function
+    
+        ErrorUnZiping:
+        errMsg = Err.Description
+        InstallTwinBasic = False
+        On Error Resume Next
+        If Len(tempPath) > 0 And fso.FolderExists(tempPath) Then fso.DeleteFolder tempPath, True
+        On Error GoTo 0
+        UpdateActivityLog "Error during InstalltwinBASIC: " & errMsg
+        MessageBox("Encountered an error attempting to install twinBASIC" & vbLf & errMsg, "error", "Error Unzipping twinBASIC")
+    
+    End Function
+    
+    Private Function OfferElevationAfterReplaceFailed(ByVal destPath As String, ByVal zipFile As String, ByVal resumeAction As String, ByVal tempPath As String) As Boolean
+        ' If not elevated, drop the temp extract and ask to restart as administrator.
+        On Error GoTo offerFailed
+        If IsElevated() Then Exit Function
+        On Error Resume Next
+        If Len(tempPath) > 0 And Not fso Is Nothing Then
+            If fso.FolderExists(tempPath) Then fso.DeleteFolder tempPath, True
+        End If
+        On Error GoTo offerFailed
+        OfferElevationAfterReplaceFailed = AbortInstallForWriteAccess(destPath, zipFile, resumeAction, True)
+        Exit Function
+offerFailed:
+        OfferElevationAfterReplaceFailed = True
+        g_ElevationAbortQuiet = True
+    End Function
+    
+    Private Function AbortInstallForWriteAccess(ByVal destPath As String, ByVal zipFile As String, ByVal resumeAction As String, Optional ByVal destMayBePartial As Boolean = False) As Boolean
+        ' Returns True so InstallTwinBasic should exit without changing the dest folder.
+        Dim folderNote As String
+        On Error GoTo abortFailed
+        AbortInstallForWriteAccess = True
+        
+        If destMayBePartial Then
+            folderNote = "Some files in that folder may already have been removed. The install is not complete."
+        Else
+            folderNote = "The existing twinBASIC folder will not be changed until that succeeds."
+        End If
+        
+        If IsElevated() Then
+            UpdateActivityLog "Cannot write to " & destPath & " (already running as administrator)"
+            MessageBox("tBHelper cannot write to [font color=vbblue]'" & destPath & "'[/font] even as administrator." & vbCrLf & _
+                folderNote, "error", "Administrator required")
+            Exit Function
+        End If
+        
+        If IsCodeRunningInTheIDE() Then
+            UpdateActivityLog "Cannot write to " & destPath & " (administrator rights required; cannot elevate from the IDE)"
+            MessageBox("tBHelper cannot write to [font color=vbblue]'" & destPath & "'[/font]." & vbCrLf & _
+                folderNote & vbCrLf & vbCrLf & _
+                "Run the compiled tBHelper [b]as administrator[/b] to install into this folder. Elevation cannot be started from the IDE.", _
+                "error", "Administrator required")
+            g_ElevationAbortQuiet = True
+            Exit Function
+        End If
+        
+        If MessageBox("tBHelper cannot write to [font color=vbblue]'" & destPath & "'[/font]." & vbCrLf & _
+            "Restart as administrator and continue the install? " & folderNote, _
+            "question", "Administrator required", "Yes", "No") = "No" Then
+            UpdateActivityLog "User declined restarting as administrator"
+            g_ElevationAbortQuiet = True
+            Exit Function
+        End If
+        
+        If RelaunchElevatedAndResume(Me.hWnd, resumeAction, zipFile) Then
+            UpdateActivityLog "Restarting as administrator"
+            g_ElevationAbortQuiet = True
+            g_ElevationRelaunchStarted = True
+            ExitAfterElevatedRelaunch
+            Exit Function
+        End If
+        
+        UpdateActivityLog "Administrator prompt was cancelled"
+        g_ElevationAbortQuiet = True
+        Exit Function
+abortFailed:
+        AbortInstallForWriteAccess = True
+        g_ElevationAbortQuiet = True
+    End Function
+    
+    Private Sub FinishResumeOperation(ByVal resumeSwitch As String, ByVal zipPath As String)
+        Dim dest As String
+        Dim errMsg As String
+        
+        On Error GoTo resumeFailed
+        If fso Is Nothing Then Exit Sub
+        If Not fso.FileExists(zipPath) Then
+            MessageBox("The zip file [font color=vbblue]'" & zipPath & "'[/font] was not found. The install could not continue.", "error", "Administrator required")
+            Exit Sub
+        End If
+        
+        If UserCancelledBecauseIdeRunning() Then
+            UpdateActivityLog "IDE is open - user cancelled"
+            Exit Sub
+        End If
+        
+        Me.MousePointer = vbHourglass
+        
+        If Not InstallTwinBasic(zipPath, resumeSwitch) Then
+            If g_ElevationRelaunchStarted Then
+                ExitAfterElevatedRelaunch
+                Exit Sub
+            End If
+            Me.MousePointer = vbDefault
+            Exit Sub
+        End If
+        
+        dest = tbHelperSettings.twinBASICFolder.Path
+        tbHelperSettings.twinBASICFolder.IstwinBASIC = True
+        tbHelperSettings.twinBASICFolder.Path = dest
+        
+        If tbHelperSettings.twinBASICFolder.IsValid Then
+            lblCurrentTBVersion.Visible = True
+            lblCurrentTBVersion.Caption = InstalledVersion & " " & tbHelperSettings.twinBASICFolder.tBVersion
+        End If
+        
+        Me.MousePointer = vbDefault
+        
+        UpdateActivityLog "twinBASIC from " & zipPath & " has been extracted and is ready to use."
+        
+        If resumeSwitch = "/resumeRevert" Then
+            MessageBox("The revert process has finished successfully.", "info", "Revert Result")
+        Else
+            MessageBox("twinBASIC from [font color=vbblue]'" & zipPath & "'[/font] has been extracted and is ready to use.", "info", "Completed")
+            If tsStartTB.IsOn Then
+                UpdateActivityLog "Start twinBASIC after update is checked, starting it"
+                ShellExecute(0, "open", txttBFolderLocation.Text & "\twinBASIC.exe", vbNullString, vbNullString, 1)
+                UpdateActivityLog "done", True
+            End If
+        End If
+        Exit Sub
+resumeFailed:
+        errMsg = Err.Description
+        On Error Resume Next
+        Me.MousePointer = vbDefault
+        MessageBox("Encountered an error finishing the install." & vbCrLf & errMsg, "error", "Administrator required")
+    End Sub
+    
+    Private Function UserCancelledBecauseIdeRunning() As Boolean
+        On Error GoTo ideCheckFailed
+        If IsCodeRunningInTheIDE Then Exit Function
+        If Not IsProcessRunning("twinbasic.exe") Then Exit Function
+        
+        UpdateActivityLog "Not allowed while the IDE is open"
+        Do While IsProcessRunning("twinbasic.exe")
+            If MessageBox("The twinBASIC IDE is running. Close it, then click OK to continue, or Cancel to abort.", _
+                "warning", "twinBASIC is running", "OK", "Cancel") = "Cancel" Then
+                UserCancelledBecauseIdeRunning = True
+                Exit Function
+            End If
+        Loop
+        Exit Function
+ideCheckFailed:
+        UserCancelledBecauseIdeRunning = False
+    End Function
+    
+    '******************************************************
+    '**** Message Box
+    '******************************************************
+    Private Function MessageBox(ByVal msgText As String, _
+        Optional ByVal msgType As String = "info", _
+        Optional ByVal msgTitle As String = vbNullString, _
+        Optional ByVal btn1Caption As String = "OK", _
+        Optional ByVal btn2Caption As String = vbNullString, _
+        Optional ByVal btn3Caption As String = vbNullString) As String
+        Dim msgPic As StdPicture
+            
+        buttonCaption = ""
+        
+        ' Load icon based on type
+        ' Select Case LCase$(msgType)
+        '     Case "info": picIcon.Picture = LoadResPicture("PNG\info.png", vbResBitmap)
+        '     Case "warning": picIcon.Picture = LoadResPicture("PNG\warning.png", vbResBitmap)
+        '     Case "error": picIcon.Picture = LoadResPicture("PNG\error.png", vbResBitmap)
+        '     Case "success": picIcon.Picture = LoadResPicture("PNG\success.png", vbResBitmap)
+        '     Case "question": picIcon.Picture = LoadResPicture("PNG\question.png", vbResBitmap)
+        ' End Select
+        On Error Resume Next
+        Select Case LCase$(msgType)
+            Case "info": Set msgPic = GetImageStd(resInfo)
+            Case "warning": Set msgPic = GetImageStd(resWarning)
+            Case "error": Set msgPic = GetImageStd(resError)
+            Case "success": Set msgPic = GetImageStd(resSuccess)
+            Case "question": Set msgPic = GetImageStd(resQuestion)
+        End Select
+        If Not msgPic Is Nothing Then picIcon.Picture = msgPic
+        Set msgPic = Nothing
+        Err.Clear
+        On Error GoTo 0
+        
+        'WriteToDebugLogFile("MessageBox called msgTitle: " & msgTitle)
+        
+        ' setup the buttons to answer the message box   
+        ConfigureCustomButton btnNum1, btn1Caption, CUST_BTN_BCOLOR, vbWhite, resNone, 20, True, True
+        ConfigureCustomButton btnNum2, btn2Caption, CUST_BTN_BCOLOR, vbWhite, resNone, 20, btn2Caption <> vbNullString, True
+        ConfigureCustomButton btnNum3, btn3Caption, CUST_BTN_BCOLOR, vbWhite, resNone, 20, btn3Caption <> vbNullString, True
+        
+        btnNum2.Visible = btn2Caption <> vbNullString
+        btnNum3.Visible = btn3Caption <> vbNullString
+        lblMessageTitle.Caption = msgTitle
+        RestoreMessageBoxLayout
+        RTFMsg.Message = msgText
+        FitMessageBoxToContent
+        
+        ShowPanelView frmInnerMsgBox
+
+        pnlMessageBox.MousePointer = vbDefault
+        
+        ' wait until the user clicks a button
+        Do While pnlMessageBox.Visible
+            DoEvents()
+        Loop
+        
+        MessageBox = buttonCaption
+        buttonCaption = vbNullChar
+        
+    End Function
+    
+    Private Sub SaveMessageBoxLayout()
+        If m_msgLayoutSaved Then Exit Sub
+        m_msgInnerW = frmInnerMsgBox.Width
+        m_msgInnerH = frmInnerMsgBox.Height
+        m_msgRtfW = RTFMsg.Width
+        m_msgRtfH = RTFMsg.Height
+        m_msgTitleW = lblMessageTitle.Width
+        m_msgBtn1Left = btnNum1.Left
+        m_msgBtn2Left = btnNum2.Left
+        m_msgBtn3Left = btnNum3.Left
+        m_msgBtnTop = btnNum1.Top
+        m_msgLayoutSaved = True
+    End Sub
+    
+    Private Sub RestoreMessageBoxLayout()
+        SaveMessageBoxLayout
+        frmInnerMsgBox.Width = m_msgInnerW
+        frmInnerMsgBox.Height = m_msgInnerH
+        RTFMsg.Width = m_msgRtfW
+        RTFMsg.Height = m_msgRtfH
+        lblMessageTitle.Width = m_msgTitleW
+        btnNum1.Left = m_msgBtn1Left
+        btnNum2.Left = m_msgBtn2Left
+        btnNum3.Left = m_msgBtn3Left
+        btnNum1.Top = m_msgBtnTop
+        btnNum2.Top = m_msgBtnTop
+        btnNum3.Top = m_msgBtnTop
+    End Sub
+    
+    Private Sub FitMessageBoxToContent()
+        ' Grow the inner dialog so GDI-measured text fits at the current DPI.
+        ' twinBASIC already DPI-scales control HWNDs; this only adds room when
+        ' the wrapped message is larger than the design-time box.
+        Const SLACK_PX As Long = 8
+        Dim clientW As Long
+        Dim clientH As Long
+        Dim dW As Long
+        Dim dH As Long
+        Dim maxInnerW As Long
+        Dim maxInnerH As Long
+        
+        GetClientSizePx RTFMsg.hWnd, clientW, clientH
+        maxInnerW = CLng(Me.ScaleWidth * 0.92)
+        maxInnerH = CLng(Me.ScaleHeight * 0.85)
+        
+        If RTFMsg.RequiredWidth > clientW + SLACK_PX Then
+            dW = PixelsToTwipsX(RTFMsg.RequiredWidth - clientW + SLACK_PX)
+            If frmInnerMsgBox.Width + dW > maxInnerW Then
+                dW = maxInnerW - frmInnerMsgBox.Width
+            End If
+            If dW > 0 Then
+                RTFMsg.Width = RTFMsg.Width + dW
+                frmInnerMsgBox.Width = frmInnerMsgBox.Width + dW
+                lblMessageTitle.Width = lblMessageTitle.Width + dW
+                btnNum1.Left = btnNum1.Left + dW
+                btnNum2.Left = btnNum2.Left + dW
+                btnNum3.Left = btnNum3.Left + dW
+                RTFMsg.Message = RTFMsg.Message
+                GetClientSizePx RTFMsg.hWnd, clientW, clientH
+            End If
+        End If
+        
+        If RTFMsg.RequiredHeight > clientH Then
+            dH = PixelsToTwips(RTFMsg.RequiredHeight - clientH + SLACK_PX)
+            If frmInnerMsgBox.Height + dH > maxInnerH Then
+                dH = maxInnerH - frmInnerMsgBox.Height
+            End If
+            If dH > 0 Then
+                RTFMsg.Height = RTFMsg.Height + dH
+                frmInnerMsgBox.Height = frmInnerMsgBox.Height + dH
+                btnNum1.Top = btnNum1.Top + dH
+                btnNum2.Top = btnNum2.Top + dH
+                btnNum3.Top = btnNum3.Top + dH
+            End If
+        End If
+    End Sub
+    
+    Private Sub btnNum1_Click()
+        buttonClick btnNum1.Caption
+        
+    End Sub
+    
+    Private Sub btnNum2_Click()
+        
+        ' this will might be used for cancel, check the caption to send the proper button response
+        buttonClick btnNum2.Caption
+
+    End Sub
+    
+    Private Sub btnNum3_Click()
+        
+        ' this will always be cancel if it is in use
+        buttonClick btnNum3.Caption
+    End Sub
+   
+    Private Sub buttonClick(responseText As String)
+        
+        ' set the response button that was clicked and hide the form from view
+        'WriteToDebugLogFile("MessageBox, buttonClick, buttonNumber:" & responseText)
+        buttonCaption = responseText
+        isAPanelDisplayed = False
+        pnlMessageBox.Visible = False
+        RTFMsg.Clear()
+        FlushRedraws()
+        
+    End Sub
+    
+    Private Function OptionSelection() As Integer
+        
+        ' return the selection for the post download process
+        If optOpenFolder.Value Then
+            OptionSelection = 1
+            
+        ElseIf optOpenZip.Value Then
+            OptionSelection = 2
+            
+        ElseIf optInstallTB.Value Then
+            OptionSelection = 3
+
+        End If
+                
+    End Function
+    
+    Private Function ProcessDownloadedZip(tBZipFile As String) As Boolean
+    
+        UpdateActivityLog "Executing Post download action"
+        'WriteToDebugLogFile("ProcessDownloadedZip " & tBZipFile & " start")
+        
+        On Error GoTo ProcessFailed
+        
+        ' depending on the selection, work with the zipfile downloaded
+        Select Case OptionSelection
+            Case 1
+                ' download only - open the download folder
+                UpdateActivityLog " of opening the download folder", True
+                ShellExecute(0, "open", txtDownloadFolder.Text, vbNullString, vbNullString, 1)
+                
+            Case 2
+                ' open the zip file using the default zip client
+                UpdateActivityLog " of opening the zip file", True
+                ShellExecute(0, "open", tBZipFile, vbNullString, vbNullString, 1)
+                
+            Case 3
+                ' ensure the IDE is not running before attempting to unzip the latest version
+                If UserCancelledBecauseIdeRunning() Then
+                    UpdateActivityLog "IDE is open - user cancelled", True
+                    FlushRedraws()
+                    ProcessDownloadedZip = False
+                    Exit Function
+                End If
+                
+                UpdateActivityLog " of installing twinBASIC", True
+                
+                'WriteToDebugLogFile("           Calling InstallTwinBasic")
+                If InstallTwinBasic(tBZipFile, "/resumeInstall") Then
+                    'WriteToDebugLogFile("           returned true - tell the user '" & tBZipFile & "' was installed")
+                    UpdateActivityLog "twinBASIC from " & tBZipFile & " has been extracted and is ready to use."
+                    'WriteToDebugLogFile("           updated the activity log")
+                    
+                    Me.MousePointer = vbDefault
+                    MessageBox("twinBASIC from [font color=vbblue]'" & tBZipFile & "'[/font] has been extracted and is ready to use.", "info", "Completed")
+                    
+                    ' does the user want to run twinBASIC after the update
+                    If tsStartTB.IsOn Then
+                        UpdateActivityLog "Start twinBASIC after update is checked, starting it"
+                        ShellExecute(0, "open", txttBFolderLocation.Text & "\twinBASIC.exe", vbNullString, vbNullString, 1)
+                        UpdateActivityLog "done", True
+                    End If
+                    
+                    'WriteToDebugLogFile("           made it here 1")
+                Else
+                    If g_ElevationRelaunchStarted Then
+                        ExitAfterElevatedRelaunch
+                        Exit Function
+                    End If
+                    If Not g_ElevationAbortQuiet Then
+                        UpdateActivityLog "twinBASIC from " & tBZipFile & " could not be extracted to " & tbHelperSettings.twinBASICFolder.Path & " error"
+                    End If
+                    Me.MousePointer = vbDefault
+                    ProcessDownloadedZip = False
+                    Exit Function
+                End If
+                
+        End Select
+        
+        'WriteToDebugLogFile("           made it here 2")
+        ProcessDownloadedZip = True
+        UpdateActivityLog "Post download action done"
+        'WriteToDebugLogFile("ProcessDownloadedZip " & tBZipFile & " end")
+        Exit Function
+        
+    ProcessFailed:
+    ProcessDownloadedZip = False
+    'WriteToDebugLogFile("ProcessDownloadedZip - Processfailed - ")
+    UpdateActivityLog "Unable to process the file " & tBZipFile
+    UpdateActivityLog "Error: " & Err.Description
+    
+    End Function
+    
+    Private Sub RefreshChangeLog(FilterButton As ucTypeFilter, isActive As Boolean)
+
+        ' check for the message box displaying
+        If isAPanelDisplayed Then Exit Sub
+
+        Dim filterText As String = FilterButton.FilterText
+        
+        ' display only those enteries that match the active filter buttons
+        filterText = UCase(filterText) ' passing the name of the control instead of caption
+
+        If isActive Then
+            ' re-add to the active filters used to fill the change log
+            activeTypeFilters.Add(filterText, filterText)
+        Else
+            ' remore from the active filters used to fill the change log
+            activeTypeFilters.Remove(filterText)
+        End If
+        
+        clgView.ClearEntries
+        clgView.BeginUpdate()  ' hold off updating the control view until all the items are added
+        
+        ' apply a filter to the listed change log
+        Dim clItem As clsChangeLogItem
+        For Each clItem In chgLogs
+            If activeTypeFilters.Exists(UCase(clItem.Type)) Then
+                clgView.AddEntry(clItem.tBVersion, clItem.Type, clItem.Notes)
+            End If
+
+        Next
+        clgView.EndUpdate() ' display the new filtered log to the user
+        
+    End Sub
+
+    Private Sub SetChangeLogHeader()
+    
+        Dim clgColumns(2) As New clsChangeLogColumn
+        clgColumns(0).Name = "VERSION"
+        clgColumns(0).Width = 70
+        clgColumns(0).WrappedEnabled = False
+
+        clgColumns(1).Name = "TYPE"
+        clgColumns(1).Width = 140
+        clgColumns(1).WrappedEnabled = False
+        
+        clgColumns(2).Name = "DESCRIPTION"
+        clgColumns(2).Width = 700
+        clgColumns(2).WrappedEnabled = True
+
+        clgView.SetColumns = clgColumns
+
+    End Sub
+    
+    Private Sub SetDownloadButtonToCheckForVersion()
+        btnDownload.Caption = CheckForVersion
+        btnDownload.ButtonImagePtr = GetImagePtr(resBinoculars)
+    End Sub
+    
+    Private Sub SetInitialTypeFilters()
+        
+        ' indicate which change log types are present and can be used to filtered the displayed change log
+        Dim clType As String
+        Dim tfName As String
+        Dim ctrl As Control
+        
+        For Each clType In chgLogs.LogTypes
+            ' the control names are tf'changelogtype' just using the first 5 of the type because the type Known Issue
+            ' isn't a valid control name, and 5 characters is unique enough for this purpose
+            tfName = UCase("tf" & Replace(clType, " ", "_"))
+            For Each ctrl In Me.Controls
+                If UCase(ctrl.name) = tfName Then
+                    WriteToDebugLogFile ctrl.name & " enabled and activated via SetInitialTypeFilters"
+                    'ctrl.active = True
+                    ctrl.enabled = True
+                    
+                End If
+                'DoEvents()
+            Next
+        Next
+        
+        Set activeTypeFilters = chgLogs.LogTypes  ' this will hold the types that are toggled using the buttons
+        
+    End Sub
+    
+    Private Sub SetupCustomButtons()
+        
+        'setup the custom button user controls on the form
+        ConfigureCustomButton btnDownload, "", CUST_BTN_BCOLOR, vbWhite, resNone, 20, True, False
+        ConfigureCustomButton btnSelectDownloadFolder, "", CUST_BTN_BCOLOR, vbWhite, resFolder, 20, True, False
+        ConfigureCustomButton btnSelecttBFolderLocation, "", CUST_BTN_BCOLOR, vbWhite, resFolder, 20, True, False
+        ConfigureCustomButton btnViewLogHistory, "View Log History", CUST_BTN_BCOLOR, vbWhite, resLogHistory, 20, True, False
+        ConfigureCustomButton btnShowRevertView, "Revert", CUST_BTN_BCOLOR, vbWhite, resRevert, 20, True, False
+         
+    End Sub
+        
+    Private Sub SetupSettingsToggleSliders()
+        
+        'setup the switch user controls on the form
+        ConfigureToggleSlider tsStartTB
+        ConfigureToggleSlider tsLogActivity
+        ConfigureToggleSlider tsLookForUpdateAtLaunch
+        ConfigureToggleSlider tsSaveSettingsOnExit
+    End Sub
+    
+    Private Sub SetupTypeFilterButtons()
+        
+        'setup the type filter user controls on the form
+        ConfigureTypeFilterButton tfImportant, "Important", COLOR_IMPORTANT
+        ConfigureTypeFilterButton tfKnown_Issue, "Known", vbBlack, "Known Issue"
+        ConfigureTypeFilterButton tfAdded, "Added", COLOR_ADDED
+        ConfigureTypeFilterButton tfImproved, "Improved", COLOR_IMPROVED
+        ConfigureTypeFilterButton tfUpdated, "Updated", COLOR_UPDATED
+        ConfigureTypeFilterButton tfTip, "Tip", COLOR_TIP
+        ConfigureTypeFilterButton tfWarning, "Warning", COLOR_WARNING
+        ConfigureTypeFilterButton tfFixed, "Fixed", COLOR_FIXED
+        ConfigureTypeFilterButton tfNote, "Note", COLOR_NOTE
+        ConfigureTypeFilterButton tfChanged, "Changed", COLOR_CHANGED
+        
+    End Sub
+
+    Public Sub WriteToLogFile()
+        
+        ' write the contents of the displayed logs to the log history file
+        Dim logFile As TextStream
+        Dim logFileName As String = App.Path & "\log.txt"
+        Dim tbVersionInstalled As Boolean = False
+        
+        Dim activityLog() As ActivityLogEntry = actLog.LogEntries
+        Dim changeLog() As clsChangeLogEntry = clgView.LogEntries
+        Dim algEntry As ActivityLogEntry
+        
+        Set logFile = fso.OpenTextFile(logFileName, ForAppending, True)
+            For Each algEntry In activityLog
+                logFile.WriteLine(algEntry.DateTime & ": " & algEntry.LogMessage)
+                If Not tbVersionInstalled Then tbVersionInstalled = InStr(algEntry.LogMessage, "Post download") > 1 ' if the user at least downloaded the zip
+            Next algEntry
+        
+            ' write the change log(s) for the version downloaded, plus the previous versions inbetween 
+            ' the installed and the latest available installed
+            If tbVersionInstalled Then
+            
+                ' these force the var to use a fixed length
+                Dim tBVersion As String * 4
+                Dim clType As String * 11
+                Dim clText As String * 150
+                Dim clgEntry As clsChangeLogEntry
+                                
+                For Each clgEntry In changeLog
+                    tBVersion = clgEntry.Values("VERSION")
+                    clType = clgEntry.Values("TYPE")
+                    
+                    On Error Resume Next
+                    clText = clgEntry.Values("DESCRIPTION")
+                    If Err <> 0 Then
+                        clText = "** missing description **"
+                        Stop
+                    End If
+                    On Error GoTo 0
+                    
+                    logFile.WriteLine(Format(Now, "MM/dd/yy hh:mm:ss AM/PM: ") & tBVersion & " - " & clType & IIf(Len(Trim(clType)) = 0, "", ": ") & clText)
+                Next clgEntry
+                
+            End If
+        logFile.Close()
+        Set logFile = Nothing
+        
+    End Sub
+    
+    '***********************************************
+    '*****   View Log History
+    '***********************************************
+    Private Sub btnViewLogHistory_Click()
+
+        ' check for the message box displaying
+        If isAPanelDisplayed Then Exit Sub
+        'isAPanelDisplayed = True
+        
+        Form1.MousePointer = vbHourglass
+        UpdateActivityLog "Loading log file view"
+        FlushRedraws
+        DoEvents()
+                
+        ConfigureCustomButton btnDeleteLog, "Delete Log", &HA2640C, vbWhite, resDelete, 20, False, False
+        
+        SetupActivityLog
+        HideDateList()
+        
+        fillingLogDuringInitialView = True
+        btnDeleteLog.Enabled = FillLogHistoryGrid
+        fillingLogDuringInitialView = False
+        
+        UpdateActivityLog "Ready"
+       
+        ShowPanelView frmInnerViewLog, 10
+
+        Form1.MousePointer = vbDefault
+        
+        FlushRedraws
+        
+    End Sub
+    
+    Dim logContents As New colHistoryLogItems
+    Dim fillingLogDuringInitialView As Boolean
+    
+    Private Sub btnDeleteLog_Click()
+        
+        ' user wishes to delete the current log.txt file
+        If MessageBox("Are you [b]sure[/b] you want to delete the log file?", "question", "Confirmation", "Yes", "No") = "No" Then Exit Sub
+
+        fso.DeleteFile(App.Path & "\log.txt")
+        UpdateActivityLog "Log.txt has been deleted."
+        
+        If tbHelperSettings.LogActivity Then
+            tbHelperSettings.LogActivity = MessageBox("The setting to [b]write to a log file[/b] is still active. Should this be turned off?", "question", "log File Setting", "Yes", "No") = 2
+            Form1.tsLogActivity = tbHelperSettings.LogActivity
+        End If
+        
+        clgView.ClearEntries()
+        
+        DatePicker.Clear()
+        lbDropdown.Clear()
+        btnDeleteLog.Enabled = False
+        
+    End Sub
+
+    Private Function FillLogHistoryGrid(Optional ViewDate As String = "") As Boolean
+    
+        ' open the log text file and display it in the flexgrid
+        
+        Dim logItem As clsHistoryLogItem
+        Dim itemColor As Long
+        Dim colNum As Integer
+    
+        Me.MousePointer = vbHourglass
+        If Not logContents.LoadLog Then
+            MessageBox("There was an issue reading the log file, can not continue", "error", "View log Failed")
+            FillLogHistoryGrid = False
+            Exit Function
+        End If
+    
+        clgHistoryView.ClearEntries()
+        clgHistoryView.BeginUpdate() ' hold drawing to the canvas until all the entries required have been set
+        For Each logItem In logContents
+            With clgHistoryView
+                If Len(ViewDate) = 0 Or logItem.LogDate = ViewDate Or ViewDate = "Show All" Then
+            
+                    If logItem.LogCLI.tBVersion = 0 Then
+                        .AddEntry(logItem.LogDateTime, "", "", logItem.LogMessage)
+                    Else
+                        .AddEntry(logItem.LogDateTime, logItem.LogCLI.tBVersion, logItem.LogCLI.Type, logItem.LogCLI.Notes)
+                    End If
+                
+                End If
+            
+            End With
+        
+        Next
+        clgHistoryView.EndUpdate()  ' draw the canvas not that all the entries required have been set
+        
+        If Len(ViewDate) = 0 Then
+            ' fill the dropdown with the unique dates from the log file
+            ' just during the first time through this
+            Dim logDate As String
+        
+            With lbDropdown
+                .Clear()
+                .AddItem("Show All")()
+                For Each logDate In logContents.HistoryLogDates
+                    .AddItem(logDate)
+                Next
+                .ListIndex = 0
+            End With
+        End If
+    
+        Me.MousePointer = vbDefault
+        FlushRedraws
+        FillLogHistoryGrid = True
+        
+    End Function
+    
+    Private Sub SetupActivityLog()
+        
+        Dim clgColumns(3) As New clsChangeLogColumn
+        clgColumns(0).Name = "Date Time"
+        clgColumns(0).Width = 150
+        clgColumns(0).WrappedEnabled = False
+        
+        clgColumns(1).Name = "Version"
+        clgColumns(1).Width = 70
+        clgColumns(1).WrappedEnabled = False
+
+        clgColumns(2).Name = "Type"
+        clgColumns(2).Width = 140
+        clgColumns(2).WrappedEnabled = False
+        
+        clgColumns(3).Name = "Description"
+        clgColumns(3).Width = 375
+        clgColumns(3).WrappedEnabled = True
+        
+        clgHistoryView.SetColumns = clgColumns
+        
+    End Sub
+    
+    Private Sub ConfigureDropdownListbox(lbDropdown As ListBox, picker As Control)
+        
+        Const BORDER_SIZE As Long = 15 ' same units as picker.Width (twips)
+        Const LIST_HEIGHT As Long = 1200
+        
+        With lbDropdown
+            .Width = picker.Width - (BORDER_SIZE * 2)
+            .Height = LIST_HEIGHT
+            .Left = picker.left
+            .Top = picker.top + picker.height
+            .FontSize = drop_DPIFontSize
+            .Font.Name = "Segoe UI"
+            .Visible = True
+        End With
+
+        With picDropDownBorder
+            .Move lbDropdown.Left - BORDER_SIZE, _
+                    lbDropdown.Top - BORDER_SIZE, _
+                    lbDropdown.Width + (BORDER_SIZE * 2), _ 
+                    lbDropdown.Height + (BORDER_SIZE * 2)
+            .Visible = True
+        End With
+
+        ApplyBottomRoundedCorners picDropDownBorder, 4, 4 ' Apply to the border first
+        ApplyBottomRoundedCorners lbDropdown, 4, 4, True         ' Then apply to the listbox
+            
+        BringWindowToTop picDropDownBorder.hWnd ' Bring border to the top
+        BringWindowToTop lbDropdown.hWnd
+        
+    End Sub
+    
+    Private Sub DatePicker_DropDown()
+
+        ' toggle the dropdown if it is visible
+        If lbDropdown.Visible Then
+            HideDateList()
+            Exit Sub
+        End If
+
+        ' Find the currently selected version in the list and highlight it
+        Dim i As Long
+        For i = 0 To lbDropdown.ListCount - 1
+            If lbDropdown.List(i) = DatePicker.Item Then
+                lbDropdown.ListIndex = i
+                Exit For
+            End If
+        Next i
+
+        ConfigureDropdownListbox lbDropdown, DatePicker
+        
+    End Sub
+    
+    Private Sub HideDateList()
+    
+        DatePicker.Collapse()
+        lbDropdown.Visible = False
+        picDropDownBorder.Visible = False
+    
+    End Sub
+    
+    Private Sub lbDropdown_Click()
+        
+        If fillingLogDuringInitialView Then
+            ' when loading the form there is no need to run this click
+            DatePicker.Item = "Show All"
+        
+        ElseIf lbDropdown.ListIndex > -1 Then
+            
+            DatePicker.Item = lbDropdown.Text ' Update the picker display
+            
+            ' Hide the list
+            HideDateList
+            
+            'WriteToDebugLogFile "    lbDropdown_Click, selected date: " & lbDropdown.Text & " HideDateList called"
+                        
+            FillLogHistoryGrid lbDropdown.Text
+            
+        End If
+        FlushRedraws()
+        
+    End Sub
+    
+    Private Sub frmInnerViewLog_Click()
+        DatePicker.Collapse()
+        HideDateList
+    End Sub
+    
+    '***********************************
+    '****  View Revert twinBASIC
+    '********************************
+    Dim localVersions As String = ";"
+    Dim revertToCLs As New colChangeLogItems
+    Dim revertToVersion As Integer
+    Dim revertToVersionRequiresDownload As Boolean
+    Dim ignoreClickEvent As Boolean
+    Private Const maxVersions = 9
+    
+    Private Sub btnShowRevertView_Click()
+        
+        ' check for the message box displaying or 
+        If isAPanelDisplayed Then Exit Sub
+        
+        revertToVersionRequiresDownload = False
+        revertGetGitHubVersionsClicked = False
+        rvtVersionChangeLog.ClearEntries()
+        
+        Form1.MousePointer = vbHourglass
+        UpdateActivityLog "Loading revert twinBASIC view"
+                
+        ignoreClickEvent = True
+        FillAvailableZips
+        ignoreClickEvent = False
+        
+        SetupRevertViewButtons
+        SetRevertChangeLogHeader
+        HideZipList
+        
+        lblCurrentVersion.Caption = tbHelperSettings.twinBASICFolder.Path & "                containing: " & tbHelperSettings.twinBASICFolder.tBVersion
+        lblCurrentDownloadFolder.Caption = tbHelperSettings.DownloadFolder.Path
+        UpdateActivityLog "Ready"
+        
+        ShowPanelView frmInnerRevertView
+        
+        Form1.MousePointer = vbDefault
+        
+        FlushRedraws
+    End Sub
+
+    Private Sub SetupRevertViewButtons()
+                
+        ConfigureCustomButton btnReverttB, "Revert tB", CUST_BTN_BCOLOR, vbWhite, resRevert, 20, False, False
+        ConfigureCustomButton btnGetVersionsFromGitHub, "Get Versions From GitHub", CUST_BTN_BCOLOR, vbWhite, resDownload, 20, True, False
+        
+    End Sub
+    
+    Private Sub FillAvailableZips()
+
+        ' find any available local zip files to revert to
+        Dim tBZipFiles As String
+        Dim zipFileVersion As String
+        Dim zipFileName As String
+        
+        tBZipFiles = Dir(tbHelperSettings.DownloadFolder.Path & "twinBASIC_IDE_BETA_*.*")
+
+        If Len(tBZipFiles) > 0 Then
+            ZipPicker.Item = "Select version to revert to"
+        Else
+            ' TODO: ask the user if they want this to go to GitHub and get the versions from Pg1 of the releases
+            '       without them having to click the "Get from GitHub" button
+            ZipPicker.Item = "No local previous versions found"
+            Exit Sub
+        End If
+
+        Do While Len(tBZipFiles) > 0
+            ' don't include the installed version zip file
+            If InStr(tBZipFiles, "_" & tbHelperSettings.twinBASICFolder.tBVersion & ".zip") = 0 Then
+            
+                ' get just the filename from the full path
+                zipFileName = fso.GetFileName(tBZipFiles)
+                
+                ' find the version number in the file name
+                zipFileVersion = Mid(zipFileName, InStr(zipFileName, "BETA_") + 5, 4)
+                zipFileVersion = GetZipFileVersionNumber(zipFileVersion)
+                
+                ' keeping the list of revertable versions to with in 9 from the previous version 
+                ' of the current installed version
+                If tbHelperSettings.twinBASICFolder.tBVersion - maxVersions <= CInt(zipFileVersion) Then
+                    ' save a list of the versions of available in the local zip files
+                    localVersions = localVersions & zipFileVersion & ";"
+
+                    lstZipFiles.AddItem(zipFileName)
+                End If
+                
+            End If
+            tBZipFiles = Dir()
+        Loop
+        
+        ' if there are 9 locally to choose from, no need to grab any from GitHub
+        If lstZipFiles.ListCount = 9 Then
+            btnGetVersionsFromGitHub.Enabled = False
+            btnGetVersionsFromGitHub.ToolTipText = "The max number of versions to revert too are local"
+        End If
+        
+    End Sub
+    
+    Private Sub ZipPicker_DropDown()
+
+        ' toggle the dropdown if it is visible
+        If lstZipFiles.Visible Then
+            HideZipList()
+            Exit Sub
+        End If
+
+        ' Find the currently selected version in the list and highlight it
+        Dim i As Long
+        For i = 0 To lstZipFiles.ListCount - 1
+            If lstZipFiles.List(i) = ZipPicker.Item Then
+                lstZipFiles.ListIndex = i
+                Exit For
+            End If
+        Next i
+
+        ConfigureDropdownListbox lstZipFiles, ZipPicker
+
+    End Sub
+    
+    Private Sub HideZipList()
+    
+        ZipPicker.Collapse()
+        
+        lstZipFiles.Visible = False
+        picDropDownBorder.Visible = False
+        
+    End Sub
+    
+    Private Sub lstZipFiles_Click()
+        
+        ' don't run this click event if the button is filling in the listbox
+        If revertGetGitHubVersionsClicked Then Exit Sub
+        
+        If lstZipFiles.ListIndex > -1 Then
+            Me.MousePointer = vbHourglass
+            ZipPicker.Item = lstZipFiles.Text ' Update the picker display
+            
+            ' Hide the list
+            HideZipList
+            
+            ' Show Change Log for the select twinBASIC version
+            Dim selectedVersion As String
+            selectedVersion = Mid(lstZipFiles.List(lstZipFiles.ListIndex), InStr(lstZipFiles.List(lstZipFiles.ListIndex), "BETA_") + 5, 4)
+            selectedVersion = GetZipFileVersionNumber(selectedVersion)
+                        
+            ' is this version available locally?
+            ' compare the version selected against the list stored in a string when the dropdown was first filled
+            revertToVersionRequiresDownload = Not InStr(localVersions, ";" & selectedVersion & ";") > -1
+        
+            revertToVersion = CInt(selectedVersion)
+        
+            lblChangeLogTitle.Caption = "ChangeLog for version " & selectedVersion
+            FillChangeLogView()
+        
+            btnReverttB.Enabled = True
+            Me.MousePointer = vbDefault
+            
+            FlushRedraws
+        End If
+    End Sub
+    
+    Private Sub FillChangeLogView()
+
+        Dim revertToCL As clsChangeLogItem
+        Dim itemColor As Long
+        Dim colNum As Integer
+        
+        rvtVersionChangeLog.ClearEntries()
+        If revertToCLs.Count > 0 Then
+            ' the user clicked the get from github button or selected a zip to view once
+            FillEntries()
+        Else
+            Dim localLogs As New colHistoryLogItems
+            
+            ' check for the local log file having the change log of the selected version to revert to
+            If Not localLogs.SearchLog() Then
+                ' there are no logs to use
+                If revertToCLs Is Nothing Then GetChangeLogsFromGitHub()
+                    
+                FillEntries()
+            Else
+                ' there is a log file, search for the selected version change log
+                Dim Li As Integer
+                
+                ' add the logs to the object the fill grid uses
+                For Li = 1 To localLogs.Count
+                    Set revertToCL = localLogs.Item(Li).LogCLI
+                    If revertToCL.tBVersion = revertToVersion Then
+                        revertToCLs.Add(revertToCL.tBVersion, revertToCL.Type, revertToCL.Notes)
+                    End If
+                    Set revertToCL = Nothing
+                Next
+                
+                If revertToCLs.Count = 0 Then
+                    ' the change log is not in the history log, fetch it from the releases page
+                    GetChangeLogsFromGitHub()
+                End If
+                
+                FillEntries()
+
+            End If
+            
+            Set localLogs = Nothing
+            
+        End If
+                
+        Set revertToCL = Nothing
+        
+    End Sub
+
+    Private Sub GetChangeLogsFromGitHub()
+        
+        If revertGetGitHubVersionsClicked Then UpdateActivityLog "Collecting versions from Github"
+            revertToCLs.GetNewerReleasedVersions(tbHelperSettings.twinBASICFolder.tBVersion - maxVersions)
+        If revertGetGitHubVersionsClicked Then UpdateActivityLog "done", True
+        
+    End Sub
+
+    Private Sub FillGitHubZips()
+        
+        ' display a like of the last 9 versions the user can to revert to
+        Dim revertToCL As clsChangeLogItem
+        Dim lastVersionAdded As Integer = 0
+       
+        ' load the change logs of the previous 10 twinBASIC versions, uses 10 because the newest will be ignored 
+        ' if it is the same as the one installed, if not then it'll be an available version to update to
+        ' just incase one is made available inbetween last check and now
+        GetChangeLogsFromGitHub()
+        
+        ZipPicker.Item = "Select version to revert to"
+        
+        lstZipFiles.Clear()
+        For Each revertToCL In revertToCLs
+            
+            If revertToCL.tBVersion <> tbHelperSettings.twinBASICFolder.tBVersion Then
+                ' only need to write the versions to the dropdown once
+                If revertToCL.tBVersion <> lastVersionAdded Then
+                
+                    ' indicate location of each version written 
+                    Dim versionNote As String
+                    
+                    If revertToCL.tBVersion > tbHelperSettings.twinBASICFolder.tBVersion Then
+                        versionNote = "[*NEW*]" ' found a new tB version
+                    ElseIf InStr(localVersions, ";" & revertToCL.tBVersion & ";") > 1 Then
+                        versionNote = "[local]" ' this is available locally
+                    Else
+                        versionNote = ""
+                    End If
+                    
+                    lstZipFiles.AddItem("twinBASIC_IDE_BETA_" & revertToCL.tBVersion & ".zip" & " " & versionNote)
+                    lastVersionAdded = revertToCL.tBVersion
+                End If
+            End If
+        Next
+        
+        ' check to make sure the last version is added, 
+        ' if this if statement fails then page 1 of the releases page doesn't have 11 to choose from
+        If lastVersionAdded = tbHelperSettings.twinBASICFolder.tBVersion Then
+            lstZipFiles.AddItem("twinBASIC_IDE_BETA_" & lastVersionAdded & ".zip") ' add the last one
+        End If
+    
+    End Sub
+    
+    Private Sub FillEntries()
+    
+        ' fill the revert change log with the selected revert to version change log
+        rvtVersionChangeLog.BeginUpdate()
+        Dim revertToCL As clsChangeLogItem
+        For Each revertToCL In revertToCLs
+            If revertToCL.tBVersion = revertToVersion Then
+                rvtVersionChangeLog.AddEntry(revertToCL.Type, revertToCL.Notes)
+            End If
+        Next
+        rvtVersionChangeLog.EndUpdate()
+        
+    End Sub
+    
+    Private Sub SetRevertChangeLogHeader()
+        
+        Dim clgColumns(1) As New clsChangeLogColumn
+        clgColumns(0).Name = "TYPE"
+        clgColumns(0).Width = 140
+        clgColumns(0).WrappedEnabled = False
+
+        clgColumns(1).Name = "DESCRIPTION"
+        clgColumns(1).Width = 600
+        clgColumns(1).WrappedEnabled = True
+
+        rvtVersionChangeLog.SetColumns = clgColumns
+
+    End Sub
+    
+    Public Function GetZipFileVersionNumber(fromText As String) As String
+    
+        ' find the version number from the string passed
+        ' simply appending each number found - needed after re-release of 870
+        Dim versionNumber As String
+        Dim i As Integer
+        Dim aChar As String
+    
+        For i = 1 To Len(fromText)
+            aChar = Mid(fromText, i, 1)
+            If IsNumeric(aChar) Then
+                versionNumber = versionNumber & aChar
+            End If
+        
+        Next i
+
+        GetZipFileVersionNumber = versionNumber
+    
+    End Function
+    
+    Private Sub frmRevertView_Click()
+        ZipPicker.Collapse()
+        HideZipList
+    End Sub
+    
+    Private Sub btnGetVersionsFromGitHub_Click()
+        
+        lblCurrentDownloadFolder.Caption = lblCurrentDownloadFolder.Caption & " and GitHub"
+        revertGetGitHubVersionsClicked = True
+        UpdateActivityLog "Getting versions to revert to from GitHub"
+        FillGitHubZips
+        UpdateActivityLog "done", True
+        revertGetGitHubVersionsClicked = False
+        
+        FlushRedraws
+        
+    End Sub
+    
+    Private Sub btnReverttB_Click()
+        
+        If MessageBox("Are you [b]sure[/b] you want to revert the current version of twinBASIC ([font color=vbblue][b]" & tbHelperSettings.twinBASICFolder.tBVersion & "[/b][/font]) to version [font color=vbgreen][b]" & _ 
+            revertToVersion & "[/b][/font]?", "question", "Reverting twinBASIC", "Yes", "No") = "No" Then Exit Sub
+        
+        Me.MousePointer = vbHourglass
+        
+        ' check that the IDE is closed before attempting to revert
+        If UserCancelledBecauseIdeRunning() Then
+            UpdateActivityLog "Revert cancelled"
+            Me.MousePointer = vbDefault
+            FlushRedraws()
+            Exit Sub
+        End If
+        
+        UpdateActivityLog "Selected to revert from version " & tbHelperSettings.twinBASICFolder.tBVersion & " to " & revertToVersion
+        
+        ' revert the version in the twinBASIC location
+        Dim revertToZipFileName As String
+        
+        revertToZipFileName = tbHelperSettings.DownloadFolder.Path & "\" & ZipPicker.Item
+        revertToZipFileName = Replace(revertToZipFileName, "[local]", "")
+        
+        If revertToVersionRequiresDownload Then
+        
+            ' the user selected a version of twinBASIC that is not available locally
+            Dim revertToURL As String = githubReleasesURL & "/download/beta-x-" & IIf(revertToVersion < 1000, "0" & CStr(revertToVersion), revertToVersion)
+            
+            UpdateActivityLog "Revert requires downloading twinBASIC " & revertToVersion
+            URLDownloadToFile 0, revertToURL & "/" & ZipPicker.Item, revertToZipFileName, 0, 0
+            UpdateActivityLog "done ", True
+                
+        End If
+        
+        UpdateActivityLog "Expanding twinBASIC " & revertToVersion
+        If Not InstallTwinBasic(revertToZipFileName, "/resumeRevert") Then
+            If g_ElevationAbortQuiet Then
+                If g_ElevationRelaunchStarted Then ExitAfterElevatedRelaunch
+                Exit Sub
+            End If
+            UpdateActivityLog "Revert failed"
+            Me.MousePointer = vbDefault
+            Exit Sub
+        End If
+        UpdateActivityLog "done", True
+        
+        ' update the form to indicate that the version was reverted to an older version
+        lblCurrentTBVersion.Caption = InstalledVersion & revertToVersion
+        
+        btnDownload.Caption = CheckForVersion
+        btnDownload.Enabled = True
+                
+        Me.MousePointer = vbDefault
+        MessageBox("The revert process has finished successfully.", "info", "Revert Result")  ' let the user know all is well
+        
+        MoveRevertCLToMain  ' add the revert version change log to the main form's object
+        
+        ' update the main form 
+        FilltBChangeLog
+        SetInitialTypeFilters
+        
+        Label9.Caption = "Change Log for "
+        lblNewVersions.Caption = revertToVersion
+        chgLogs.LatestVersion = revertToVersion
+        
+        FlushRedraws
+        
+        HidePanelView pnlRevert
+        
+    End Sub
+    
+    Private Sub MoveRevertCLToMain()
+        
+        ' add the reverted to version's change log to the main object
+        Dim revertToCL As clsChangeLogItem
+
+        Set chgLogs = New colChangeLogItems
+        
+        For Each revertToCL In revertToCLs
+            chgLogs.Add(revertToCL.tBVersion, revertToCL.Type, revertToCL.Notes)
+        Next
+        
+        Set revertToCL = Nothing
+        Set revertToCLs = Nothing
+        
+    End Sub
+    
+    Private Sub lblCloseRevert_Click()
+        
+        HidePanelView pnlRevert
+        
+    End Sub
+    
+    Private Sub lblCloseLogHistoryView_Click()
+        
+        HidePanelView pnlViewLogHistory
+        
+    End Sub
+    
+    Private Sub Form_KeyDown(KeyCode As Integer, Shift As Integer)
+        
+        ' this doesn't work currently as once a fame is displayed and hid
+        ' the form no longer run this event, will revisit in beta 2 (TODO) 
+        If KeyCode = vbKeyEscape Then
+            If isAPanelDisplayed Then
+                pnlMessageBox.Visible = False
+                pnlRevert.Visible = False
+                pnlViewLogHistory.Visible = False
+            End If
+        End If
+    End Sub
+    
+    Private Sub frmInnerRevertView_Click()
+        
+        HideZipList()
+    End Sub
+    
+    '***********************************************
+    '*****  Select Folder
+    '******************************************
+    Private Sub ConfigureSelectFolderButtons()
+        
+        'setup the user control download button
+        With btnOkay
+            .Caption = "Okay"
+            .BackColor = CUST_BTN_BCOLOR  ' Blue
+            .ForeColor = vbWhite  ' White
+            .FontSize = 11
+            '.HoverColor = RGB(18, 40, 234) ' Darker blue
+            .BorderRadius = 3
+            .FontBold = False
+            .ButtonImagePtr = 0
+            .IconSize = 0
+            .IconSpacing = 0
+            .Enabled = True
+        End With
+        
+        With btnCancelSelectFolder
+            .Caption = "Cancel"
+            .BackColor = CUST_BTN_BCOLOR  ' darker grey
+            .ForeColor = vbWhite
+            .FontSize = 11
+            '.HoverColor = RGB(37, 99, 235)
+            .BorderRadius = 3
+            .FontBold = False
+            .ButtonImagePtr = 0
+            .IconSize = 0
+            .IconSpacing = 0
+            .Enabled = True
+        End With
+        
+    End Sub
+    
+    Private Function DoesDriveExist(driveLetter As String) As Boolean
+        
+        Dim searchResult As Boolean = False
+        Dim indexNo As Integer = 0
+        
+        Do Until (searchResult Or indexNo = lstDrives.ListCount)
+            lstDrives.ListIndex = indexNo
+            searchResult = (UCase(driveLetter) = UCase(lstDrives.Text))
+            indexNo = indexNo + 1
+        Loop
+        
+        DoesDriveExist = searchResult
+        
+    End Function
+    
+    Private Sub PopulateDrivesList()
+        
+        'TODO: add volume label to the drive list
+        Dim drives As Long
+        Dim i As Long
+        Dim driveLetter As String
+        Dim driveType As Long
+        Dim volumeLabel As String
+        
+        drives = GetLogicalDrives()
+        lstDrives.Clear
+
+        For i = 0 To 25
+            If (drives And (2 ^ i)) <> 0 Then
+                driveLetter = Chr$(65 + i) & ":"
+                driveType = GetDriveType(driveLetter & "\")
+                If driveType = DRIVE_FIXED Or driveType = DRIVE_REMOVABLE Then
+                    'volumeLabel = Dir(driveLetter & ":\", vbVolume)
+                    lstDrives.AddItem driveLetter
+                End If
+            End If
+        Next i
+    End Sub
+
+    Private Sub DrivePicker_DropDown()
+        
+        ' toggle the dropdown if it is visible
+        If lstDrives.Visible Then
+            HideDriveList()
+            Exit Sub
+        End If
+        
+        ' Find the currently selected drive in the list and highlight it
+        Dim i As Long
+        For i = 0 To lstDrives.ListCount - 1
+            If lstDrives.List(i) = DrivePicker.Item Then
+                lstDrives.ListIndex = i
+                Exit For
+            End If
+        Next i
+
+        ConfigureDropdownListbox lstDrives, DrivePicker
+                
+    End Sub
+
+    Private Sub lstDrives_Click()
+        
+        ' When a new drive is selected from the list...
+        If lstDrives.ListIndex > -1 Then
+            DrivePicker.Item = lstDrives.Text ' Update the picker display
+            
+            FolderList.ShowDrive lstDrives.Text
+                        
+            ' Hide the list
+            HideDriveList
+            FlushRedraws
+        End If
+    End Sub
+
+    Private Sub HideDriveList()
+        
+        DrivePicker.Collapse()
+        lstDrives.Visible = False
+        picDropDownBorder.Visible = False
+        
+    End Sub
+    
+    Private Sub btnOkay_Click()
+        
+        ' assign the selection to the proper textbox
+
+        If Len(FolderList.Path) > 0 Then
+            ' there was a selection
+            Dim txtBox As Control
+            
+            If InStr(lblSelectFolderTitle.Caption, "download") > 0 Then
+                Set txtBox = txtDownloadFolder
+                Dim newFolder As clsSettingsFolder
+                newFolder.Path = FolderList.Path
+                tbHelperSettings.DownloadFolder = newFolder
+
+            Else
+                If Val(GetTBVersionInFolder(FolderList.Path & "\")) = 0 Then
+                    ' twinBASIC is not in the selected location
+                    MessageBox("The folder chosen, [font color=vbBlue]'" & FolderList.Path & "' [/font][b]does not contain twinBASIC[/b].", "error", "Invalid twinBASIC folder selection")
+                    Exit Sub
+                End If
+                
+                Set txtBox = txttBFolderLocation
+                tbHelperSettings.twinBASICFolder.Path = FolderList.Path & "\"
+                btnDownload.Enabled = True ' user can now check for a new version once a valid folder is selected
+                
+            End If
+            
+            txtBox.Text = FolderList.Path
+            If Right(txtBox.Text, 1) <> "\" Then txtBox.Text = txtBox.Text & "\"
+            
+        End If
+        
+        Set txtBox = Nothing
+        
+        HidePanelView pnlSelectFolder
+    End Sub
+
+    Private Sub btnCancelSelectFolder_Click()
+        
+        HidePanelView pnlSelectFolder
+        MessageBox("A folder wasn't chosen, [b]the operation was cancelled[/b].", , "No selection")
+        
+    End Sub
+    
+    Private Sub lblCloseSelectFolder_Click()
+        
+        HidePanelView pnlSelectFolder
+        MessageBox("A folder wasn't chosen, [b]the operation was cancelled[/b].", , "No selection")
+        
+    End Sub
+    
+    Private Sub frmInnerSelectFolder_Click()
+        
+        HideDriveList
+    End Sub
+    
+    Private Sub tmrCatchUp_Timer()
+        ' check for remaining UI updates that may have happened to quickly
+        tmrCatchUp.Enabled = False
+        'WriteToDebugLogFile("tmrCatchUp: RedrawCount=" & RedrawQueue.Count)
+        If RedrawQueue.Count > 0 Then FlushRedraws()
+
+        If frmInnerSelectFolder.Visible Then
+            Debug.Print "refresh attempt from tmrCatchup"
+            FolderList.Update()
+            FolderList.SetFocus()
+            frmInnerSelectFolder.Refresh()
+        End If
+    End Sub
+    
+    Private Sub CalculateDPIValues()
+        
+        Dim hdc As Long
+        Dim dpiX As Long
+        Dim dpiY As Long
+
+        ' Get the device context (DC) for the screen
+        hdc = GetDC(0)
+
+        ' Get the horizontal and vertical DPI values
+        dpiX = GetDeviceCaps(hdc, LOGPIXELSX)
+        dpiY = GetDeviceCaps(hdc, LOGPIXELSY)
+
+        ' Release the device context
+        ReleaseDC 0, hdc
+
+        ' Example for scaling controls (assuming 96 DPI as baseline)
+        drop_DPIFontSize = TEXT_BASE_FONT_SIZE * (dpiX / BASE_DPI)
+        If drop_DPIFontSize > MAX_FONT_SIZE Then drop_DPIFontSize = MAX_FONT_SIZE
+
+    End Sub
+
+End Class

@@ -1,0 +1,470 @@
+[Description("")]
+[FormDesignerId("AFEA3084-B60E-4293-997F-D622BD11369D")]
+[ClassId("F470E23E-4A86-4DF9-9ACC-4DD803520199")]
+[InterfaceId("2D2031B6-B862-4D5B-A148-BBA8F090C8BF")]
+[EventInterfaceId("15F03500-8905-43CB-98CB-BA373CA6B68E")]
+[COMControl]
+Class ucActivityLog
+
+    Option Explicit
+    
+    Private Const GWL_WNDPROC As Long = -4
+    Private Const WM_MOUSEWHEEL As Long = &H20A
+    
+    Public canvashWnd As LongPtr
+
+    Private Type Size
+        cx As Long
+        cy As Long
+    End Type
+
+    Public Type ActivityLogEntry
+        DateTime As String
+        LogMessage As String
+    End Type
+
+    Public Event ItemClick(ByVal ItemIndex As Long)
+    Public Event ItemDoubleClick(ByVal ItemIndex As Long)
+
+    Private m_Entries() As ActivityLogEntry
+    Private m_EntryCount As Long
+    Private m_SelectedIndex As Long
+    Private m_ScrollOffset As Long
+
+    Private m_DPI_Horizontal As Long
+    Private m_DPI_Vertical As Long
+    Private m_DPIFontSize As Integer
+    Private m_DPIRowHeight As Integer
+    
+    ' Drawing surface
+    Private WithEvents m_Canvas As PictureBox
+    Private WithEvents m_VScrollBar As VScrollBar
+
+    ' colors for the type of change log item
+    Private Const COLOR_IMPORTANT = vbBlue
+    Private Const COLOR_IMPROVED = RGB(107, 142, 35)      ' other green  
+    Private Const COLOR_FIXED = RGB(56, 118, 29) ' green
+    Private Const COLOR_UPDATED = RGB(107, 45, 103)       ' Orange badge
+    Private Const COLOR_TIP = RGB(22, 83, 126)           ' blueish
+    Private Const COLOR_DEFAULT = &H808080       ' Gray badge  
+    Private Const COLOR_KNOWN = vbBlack
+    Private Const COLOR_ADDED = RGB(75, 0, 130)
+    Private Const COLOR_WARNING = RGB(153, 0, 0)
+    
+    Private Const TEXT_COLOR_WHITE = &HFFFFFF
+    Private Const TEXT_COLOR_ERROR = &H3C14DC
+    Private Const BACKGROUND_COLOR = &HFFFFFF
+    Private Const ROW_ALT_COLOR = &HF8F8F8
+    Private Const TEXT_COLOR_DARK = &H333333
+    Private Const TEXT_COLOR_VERSION = -RGB(128, 49, 116) ' Blue version text
+    Private Const SELECTED_COLOR = &HEAE2D0    ' Light blue selection
+    Private Const BORDER_COLOR = &HE0E0E0
+
+    ' other constants
+    'Private Const ROW_HEIGHT = 40
+    Private Const HEADER_HEIGHT = 0  ' no header in the activity log
+    Private Const TEXT_BASE_FONT_SIZE = 10
+    Private Const SCROLL_WIDTH = 200
+    
+    Public Property Get LogEntries() As ActivityLogEntry()
+        LogEntries = m_Entries
+    End Property
+    
+    Public Property Get LogEntryCount() As Integer
+        LogEntryCount = m_EntryCount
+    End Property
+    
+    Private Sub CalculateDPIValues()
+        Dim hdc As Long
+        Dim scaleFactor As Single
+
+        ' Get the device context (DC) for the screen
+        hdc = GetDC(0)
+
+        ' Get the horizontal and vertical DPI values
+        m_DPI_Horizontal = GetDeviceCaps(hdc, LOGPIXELSX)
+        m_DPI_Vertical = GetDeviceCaps(hdc, LOGPIXELSY)
+
+        ' Release the device context
+        ReleaseDC 0, hdc
+
+        Select Case m_DPI_Horizontal
+            Case Is < 120: m_DPIFontSize = 10
+            Case 120 To 144: m_DPIFontSize = 11
+            Case 145 To 192: m_DPIFontSize = 12
+            Case Else: m_DPIFontSize = 13
+        End Select
+        
+        ' adding a calculation for the row height and removing the ROW_HEIGHT constant - thanks for AARays on VBForums
+        m_DPIRowHeight = MulDiv(40, m_DPI_Vertical, 96)
+        
+        ' Optional: log for visibility
+        'Debug.Print "DPI_X=" & dpiX & ", Font scale=" & Format(scaleFactor, "0.00") & ", Font size=" & m_DPIFontSize
+        'Debug.Print "DPI_Y=" & dpiY & ", Row Height=" & m_DPIRowHeight
+        
+    End Sub
+    
+    Private Sub UserControl_Initialize()
+        On Error GoTo InitFailed
+        StartupTrace "ucActivityLog.Initialize enter"
+    
+        CalculateDPIValues
+        
+        InitializeControls
+        
+        ' array of change log entries
+        ReDim m_Entries(0)
+                
+        m_EntryCount = 0
+        m_SelectedIndex = -1
+        m_ScrollOffset = 0
+
+        'capture mouse scroll
+        canvashWnd = m_Canvas.hWnd
+        ucDictionary.Add canvashWnd, Me
+        
+        OriginalCanvasProc = SetWindowLong(canvashWnd, GWL_WNDPROC, AddressOf Canvas_WindowProc)
+        
+        StartupTrace "ucActivityLog.Initialize leave"
+        Exit Sub
+InitFailed:
+        StartupTraceError "ucActivityLog.Initialize"
+    End Sub
+
+    Private Sub InitializeControls()
+    
+        ' Create canvas for the change log items
+        Set m_Canvas = Controls.Add("VB.PictureBox", "Canvas")
+        With m_Canvas
+            .Left = 0
+            .Top = HEADER_HEIGHT
+            .Width = UserControl.ScaleWidth
+            .Height = UserControl.ScaleHeight
+            .BackColor = BACKGROUND_COLOR
+            .BorderStyle = 0 ' None
+            .AutoRedraw = True
+            .ScaleMode = vbPixels
+            .Font.Name = "Segoe UI"
+            .Font.Size = m_DPIFontSize  ' 10 
+            .Visible = True
+        End With
+                
+        ' Create vertical scrollbar
+        Set m_VScrollBar = Controls.Add("VB.VScrollBar", "VScroll")
+        With m_VScrollBar
+            .Left = UserControl.ScaleWidth
+            .Top = HEADER_HEIGHT
+            .Width = SCROLL_WIDTH
+            .Height = UserControl.ScaleHeight
+            .Min = 0
+            .Max = 0
+            .Value = 0
+            .Visible = False
+        End With
+        
+    End Sub
+    
+    Private Sub m_Canvas_Paint()
+        
+        RedrawCanvas
+        
+    End Sub
+
+    Private Sub RedrawCanvas()
+
+        'WriteToDebugLogFile("   ActivityLog: RedrawCanvas")
+        Dim i As Long
+        Dim yPos As Long
+        Dim visibleEntries As Long
+        Dim startIndex As Long
+        Dim endIndex As Long
+        Dim canvasHeightPixels As Long
+    
+        m_Canvas.Cls
+        m_Canvas.BackColor = BACKGROUND_COLOR
+        
+        canvasHeightPixels = ClientHeightPx(m_Canvas.hWnd)
+        
+        ' Now calculate how many full rows fit, plus 1 if there's partial space left
+        visibleEntries = canvasHeightPixels \ m_DPIRowHeight  'ROW_HEIGHT
+        If (canvasHeightPixels Mod m_DPIRowHeight) <> 0 Then visibleEntries = visibleEntries + 1
+        
+        startIndex = m_ScrollOffset
+        endIndex = startIndex + visibleEntries - 1
+        If endIndex >= m_EntryCount Then endIndex = m_EntryCount - 1
+                
+        yPos = 0
+        For i = startIndex To endIndex
+            DrawRow i, yPos
+            yPos = yPos + m_DPIRowHeight 'ROW_HEIGHT
+        Next i
+    
+        With m_VScrollBar
+            .Min = 0
+            .LargeChange = visibleEntries
+            .SmallChange = 1
+            .Max = m_EntryCount - visibleEntries
+            If .Max < 0 Then .Max = 0
+            .Value = m_ScrollOffset ' Or clamp it if needed
+        End With
+        
+        ' ensure the canvas displays the update
+        'm_Canvas.Refresh
+        RequestRedraw
+
+    End Sub
+
+    Private Sub DrawRow(ByVal entryIndex As Long, ByVal yPos As Long)
+        Dim entry As ActivityLogEntry
+        Dim actualIndex As Long
+        Dim hdc As Long
+        Dim rowRect As RECT
+        Dim hBrush As Long
+        Dim isSelected As Boolean
+        Dim sz As Size
+        
+        ' Get the actual entry (accounting for filtering)
+        actualIndex = m_EntryCount - 1
+        If actualIndex = -1 Then Exit Sub
+    
+        entry = m_Entries(entryIndex)
+        isSelected = (entryIndex = m_SelectedIndex)
+        
+        'WriteToDebugLogFile("   Activity Log: DrawRow " & entry.LogMessage)
+        
+        hdc = m_Canvas.hDC
+    
+        ' Set up row rectangle
+        rowRect.Left = 0
+        rowRect.Top = yPos
+        rowRect.Right = ClientWidthPx(m_Canvas.hWnd)
+        rowRect.Bottom = yPos + m_DPIRowHeight 'ROW_HEIGHT
+    
+        ' Draw row background
+        If isSelected Then
+            hBrush = CreateSolidBrush(SELECTED_COLOR)
+        ElseIf (entryIndex Mod 2) = 0 Then
+            hBrush = CreateSolidBrush(ROW_ALT_COLOR)
+        Else
+            hBrush = CreateSolidBrush(BACKGROUND_COLOR)
+        End If
+    
+        FillRect hdc, rowRect, hBrush
+        DeleteObject hBrush
+        
+        ' Measure width of the timestamp in pixels using GDI
+        Call GetTextExtentPoint32(hdc, entry.DateTime, Len(entry.DateTime), sz)
+        
+        ' Draw log message, aligned just after timestamp + gap
+        Const GAP As Long = 6
+        Dim msgX As Long
+        Dim textPadX As Long
+        Dim textPadY As Long
+        textPadX = ScaleDesignPx(20)
+        textPadY = ScaleDesignPx(12)
+        msgX = textPadX + sz.cx + ScaleDesignPx(GAP)
+                
+        ' Draw date/time number (blue)
+        SetBkMode hdc, 1 ' TRANSPARENT
+        SetTextColor hdc, TEXT_COLOR_VERSION
+        TextOut hdc, textPadX, yPos + textPadY, entry.DateTime, Len(entry.DateTime)
+    
+        ' Draw description - if it contains the word error then draw it crimsson
+        If InStr(UCase(entry.LogMessage), "ERROR") > 0 Then
+            SetTextColor hdc, TEXT_COLOR_ERROR
+        Else
+            SetTextColor hdc, TEXT_COLOR_DARK
+        End If
+        
+        TextOut hdc, msgX, yPos + textPadY, entry.LogMessage, Len(entry.LogMessage)
+    End Sub
+
+    Private Sub m_Canvas_MouseDown(Button As Integer, Shift As Integer, x As Single, y As Single)
+        Dim clickedIndex As Long
+        Dim actualIndex As Long
+    
+        If Button = 1 Then ' Left click
+            clickedIndex = Int(y / m_DPIRowHeight) + m_ScrollOffset
+            
+            If actualIndex <> -1 Then
+
+                m_SelectedIndex = clickedIndex
+                RedrawCanvas
+                RaiseEvent ItemClick(clickedIndex)
+            End If
+        End If
+    End Sub
+
+    Private Sub m_Canvas_DblClick()
+        If m_SelectedIndex <> -1 Then
+            RaiseEvent ItemDoubleClick(m_SelectedIndex)
+        End If
+    End Sub
+
+    Private Sub m_VScrollBar_Change()
+        m_ScrollOffset = m_VScrollBar.Value
+        RedrawCanvas
+        
+    End Sub
+
+    Public Sub AddEntry(ByVal dateTime As String, ByVal LogMessage As String, Optional ByVal UpdateLastEntry As Boolean = False)
+        
+        'WriteToDebugLogFile("   Activity Log: AddEntry: " & LogMessage & " UpdateLastEntry: " & UpdateLastEntry)
+
+        If UpdateLastEntry Then
+
+            If m_EntryCount = 0 Then Exit Sub ' Safety
+            ' Append to the last entry's message
+            m_Entries(m_EntryCount - 1).LogMessage = m_Entries(m_EntryCount - 1).LogMessage & " - " & LogMessage
+
+            ' Redraw just the updated row (and optionally the one below)
+            Dim entryIndex As Long
+            entryIndex = m_EntryCount - 1
+            Dim yPos As Long
+            yPos = (entryIndex - m_ScrollOffset) * m_DPIRowHeight 'ROW_HEIGHT
+            If yPos >= 0 And yPos < ClientHeightPx(m_Canvas.hWnd) Then
+                DrawRow entryIndex, yPos
+
+                ' Optional: redraw the next row in case overlap occurred
+                If entryIndex + 1 < m_EntryCount Then
+                    DrawRow entryIndex + 1, yPos + m_DPIRowHeight 'ROW_HEIGHT
+                End If
+            End If
+
+        Else
+            Dim newEntry As ActivityLogEntry
+        
+            newEntry.DateTime = dateTime
+            newEntry.LogMessage = LogMessage
+            
+            ' Add to array
+            ReDim Preserve m_Entries(m_EntryCount)
+            m_Entries(m_EntryCount) = newEntry
+            m_EntryCount = m_EntryCount + 1
+        
+            ' show the latest entry in the activity log
+            m_SelectedIndex = m_EntryCount - 1
+
+            ' how many entries can be shown 
+            Dim canvasHeightPixels As Long
+            canvasHeightPixels = ClientHeightPx(m_Canvas.hWnd)
+            
+            Dim visibleEntries As Long
+            visibleEntries = canvasHeightPixels \ m_DPIRowHeight 'ROW_HEIGHT
+            
+            If (canvasHeightPixels Mod m_DPIRowHeight) <> 0 Then visibleEntries = visibleEntries + 1
+            
+            ' scroll if needed to highlight the last entry added to the log
+            If m_EntryCount > visibleEntries Then
+                m_ScrollOffset = m_EntryCount - visibleEntries
+            Else
+                m_ScrollOffset = 0
+            End If
+            
+            UpdateScrollBar
+            
+        End If
+        
+        RedrawCanvas
+        
+    End Sub
+
+    Public Sub RequestRedraw()
+        ' tell the system to update this uc 
+        
+        If Not (m_Canvas Is Nothing Or m_Canvas.hDC = 0) Then
+            QueueRedraw m_Canvas.hWnd
+        Else
+            'WriteToDebugLogFile("   Activity Log:  RequestRedraw criteria failed *************")
+        End If
+    End Sub
+    
+    Private Sub UpdateScrollBar()
+
+        Dim filteredCount As Long
+        Dim visibleRows As Long
+    
+        filteredCount = m_EntryCount
+        
+        ' check to see if the scrollbar is needed, if so convert the pixel row height to twips to calculate that
+        If Not m_Canvas Is Nothing Then visibleRows = Int(ClientHeightPx(m_Canvas.hWnd) / m_DPIRowHeight)
+            
+        If filteredCount > visibleRows Then
+            m_VScrollBar.Max = filteredCount - visibleRows
+            m_VScrollBar.Visible = True
+        Else
+            m_VScrollBar.Visible = False
+            m_ScrollOffset = 0
+        End If
+        
+        UpdateScrollOwnership m_Canvas.hWnd, (m_VScrollBar.Value * m_DPIRowHeight)
+        
+    End Sub
+
+    Public Sub ClearEntries()
+        
+        ReDim m_Entries(0)
+        m_EntryCount = 0
+        m_SelectedIndex = -1
+        m_ScrollOffset = 0
+        UpdateScrollBar
+        RedrawCanvas
+    End Sub
+
+    Private Sub UserControl_Resize()
+        
+        If Not m_Canvas Is Nothing Then
+        
+            m_Canvas.Width = UserControl.ScaleWidth - SCROLL_WIDTH
+            m_Canvas.Height = UserControl.ScaleHeight - HEADER_HEIGHT
+        
+            m_VScrollBar.Left = UserControl.ScaleWidth - SCROLL_WIDTH
+            m_VScrollBar.Height = UserControl.ScaleHeight - HEADER_HEIGHT
+        
+            UpdateScrollBar
+            RedrawCanvas
+            
+        End If
+    End Sub
+
+    Public Property Get EntryCount() As Long
+        EntryCount = m_EntryCount
+    End Property
+
+    Public Property Get SelectedIndex() As Long
+        SelectedIndex = m_SelectedIndex
+    End Property
+    
+    Public Sub HandleMouseScroll(ByVal zDelta As Long)
+        
+        If Not m_VScrollBar.Visible Then Exit Sub
+
+        Dim direction As Long
+        direction = Sgn(zDelta)
+
+        Dim newVal As Long
+        newVal = m_VScrollBar.Value - direction
+
+        If newVal < m_VScrollBar.Min Then newVal = m_VScrollBar.Min
+        If newVal > m_VScrollBar.Max Then newVal = m_VScrollBar.Max
+
+        If newVal <> m_VScrollBar.Value Then
+            m_VScrollBar.Value = newVal
+            m_ScrollOffset = newVal
+            RedrawCanvas()
+            
+        End If
+    End Sub
+
+    Private Sub UserControl_Terminate()
+        
+        ' have to release things when destorying the control
+        If canvashWnd <> 0 And OriginalCanvasProc <> 0 Then
+            Call SetWindowLong(canvashWnd, GWL_WNDPROC, OriginalCanvasProc)
+            canvashWnd = 0
+            OriginalCanvasProc = 0
+        End If
+        
+    End Sub
+
+End Class
