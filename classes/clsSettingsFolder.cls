@@ -103,9 +103,10 @@ Private Function GettwinBASICVersion() As Integer
     ' open the file designated as the one with the version number
     fileContents = fsoFileRead(fileWithVersionInfo)
     
-    ' parse the text for the version number
-    tempString = Mid(fileContents, InStr(fileContents, versionIndicator))
-    GettwinBASICVersion = Mid(tempString, Len(versionIndicator) + 1, 4)
+    ' parse the text for the version number (build.js: "twinBASIC IDE BETA 1003")
+    tempString = Mid(fileContents, InStr(fileContents, versionIndicator) + Len(versionIndicator))
+    tempString = Trim$(tempString)
+    GettwinBASICVersion = Val(Left$(tempString, 4))
     _tBVersion = GettwinBASICVersion
     'WriteToDebugLogFile("Exit GetCurrentTBVersion with version " & _tBVersion)
     

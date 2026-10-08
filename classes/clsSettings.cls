@@ -87,6 +87,7 @@ End Function
 
 Public Function SaveSettings() As Boolean
     
+    On Error GoTo saveFailed
     ' write the values to the file overwriting the old if there
     With fso.CreateTextFile(App.Path & "\settings.txt", True)
         .WriteLine("Download Folder: " & _downloadFolder.Path)
@@ -98,7 +99,10 @@ Public Function SaveSettings() As Boolean
         .WriteLine("Log updates: " & CStr(_logActivity))
         .Close()
     End With
-    
+    SaveSettings = True
+    Exit Function
+saveFailed:
+    SaveSettings = False
 End Function
 
 Public Property Get SettingsFileLoaded() As Boolean

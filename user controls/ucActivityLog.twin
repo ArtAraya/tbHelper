@@ -64,6 +64,7 @@ Class ucActivityLog
     'Private Const ROW_HEIGHT = 40
     Private Const HEADER_HEIGHT = 0  ' no header in the activity log
     Private Const TEXT_BASE_FONT_SIZE = 10
+    Private Const SCROLL_WIDTH = 200
     
     Public Property Get LogEntries() As ActivityLogEntry()
         LogEntries = m_Entries
@@ -147,7 +148,7 @@ Class ucActivityLog
         With m_VScrollBar
             .Left = UserControl.ScaleWidth
             .Top = HEADER_HEIGHT
-            .Width = 200
+            .Width = SCROLL_WIDTH
             .Height = UserControl.ScaleHeight
             .Min = 0
             .Max = 0
@@ -176,8 +177,7 @@ Class ucActivityLog
         m_Canvas.Cls
         m_Canvas.BackColor = BACKGROUND_COLOR
         
-        ' Convert canvas height to pixels FIRST
-        canvasHeightPixels = m_Canvas.Height \ Screen.TwipsPerPixelY
+        canvasHeightPixels = ClientHeightPx(m_Canvas.hWnd)
         
         ' Now calculate how many full rows fit, plus 1 if there's partial space left
         visibleEntries = canvasHeightPixels \ m_DPIRowHeight  'ROW_HEIGHT
@@ -231,7 +231,7 @@ Class ucActivityLog
         ' Set up row rectangle
         rowRect.Left = 0
         rowRect.Top = yPos
-        rowRect.Right = m_Canvas.Width
+        rowRect.Right = ClientWidthPx(m_Canvas.hWnd)
         rowRect.Bottom = yPos + m_DPIRowHeight 'ROW_HEIGHT
     
         ' Draw row background
@@ -252,12 +252,16 @@ Class ucActivityLog
         ' Draw log message, aligned just after timestamp + gap
         Const GAP As Long = 6
         Dim msgX As Long
-        msgX = 20 + sz.cx + GAP ' 20 is starting X for timestamp
+        Dim textPadX As Long
+        Dim textPadY As Long
+        textPadX = ScaleDesignPx(20)
+        textPadY = ScaleDesignPx(12)
+        msgX = textPadX + sz.cx + ScaleDesignPx(GAP)
                 
         ' Draw date/time number (blue)
         SetBkMode hdc, 1 ' TRANSPARENT
         SetTextColor hdc, TEXT_COLOR_VERSION
-        TextOut hdc, 20, yPos + 12, entry.DateTime, Len(entry.DateTime)
+        TextOut hdc, textPadX, yPos + textPadY, entry.DateTime, Len(entry.DateTime)
     
         ' Draw description - if it contains the word error then draw it crimsson
         If InStr(UCase(entry.LogMessage), "ERROR") > 0 Then
@@ -266,7 +270,7 @@ Class ucActivityLog
             SetTextColor hdc, TEXT_COLOR_DARK
         End If
         
-        TextOut hdc, msgX, yPos + 12, entry.LogMessage, Len(entry.LogMessage)
+        TextOut hdc, msgX, yPos + textPadY, entry.LogMessage, Len(entry.LogMessage)
     End Sub
 
     Private Sub m_Canvas_MouseDown(Button As Integer, Shift As Integer, x As Single, y As Single)
@@ -304,7 +308,7 @@ Class ucActivityLog
         If UpdateLastEntry Then
 
             If m_EntryCount = 0 Then Exit Sub ' Safety
-            ' Append to the last entry’s message
+            ' Append to the last entry's message
             m_Entries(m_EntryCount - 1).LogMessage = m_Entries(m_EntryCount - 1).LogMessage & " - " & LogMessage
 
             ' Redraw just the updated row (and optionally the one below)
@@ -312,7 +316,7 @@ Class ucActivityLog
             entryIndex = m_EntryCount - 1
             Dim yPos As Long
             yPos = (entryIndex - m_ScrollOffset) * m_DPIRowHeight 'ROW_HEIGHT
-            If yPos >= 0 And yPos < m_Canvas.Height Then
+            If yPos >= 0 And yPos < ClientHeightPx(m_Canvas.hWnd) Then
                 DrawRow entryIndex, yPos
 
                 ' Optional: redraw the next row in case overlap occurred
@@ -337,7 +341,7 @@ Class ucActivityLog
 
             ' how many entries can be shown 
             Dim canvasHeightPixels As Long
-            canvasHeightPixels = m_Canvas.Height \ Screen.TwipsPerPixelY
+            canvasHeightPixels = ClientHeightPx(m_Canvas.hWnd)
             
             Dim visibleEntries As Long
             visibleEntries = canvasHeightPixels \ m_DPIRowHeight 'ROW_HEIGHT
@@ -377,7 +381,7 @@ Class ucActivityLog
         filteredCount = m_EntryCount
         
         ' check to see if the scrollbar is needed, if so convert the pixel row height to twips to calculate that
-        If Not m_Canvas Is Nothing Then visibleRows = Int(m_Canvas.Height / (m_DPIRowHeight * Screen.TwipsPerPixelX))
+        If Not m_Canvas Is Nothing Then visibleRows = Int(ClientHeightPx(m_Canvas.hWnd) / m_DPIRowHeight)
             
         If filteredCount > visibleRows Then
             m_VScrollBar.Max = filteredCount - visibleRows
@@ -405,10 +409,10 @@ Class ucActivityLog
         
         If Not m_Canvas Is Nothing Then
         
-            m_Canvas.Width = UserControl.ScaleWidth - 200
+            m_Canvas.Width = UserControl.ScaleWidth - SCROLL_WIDTH
             m_Canvas.Height = UserControl.ScaleHeight - HEADER_HEIGHT
         
-            m_VScrollBar.Left = UserControl.ScaleWidth - 200
+            m_VScrollBar.Left = UserControl.ScaleWidth - SCROLL_WIDTH
             m_VScrollBar.Height = UserControl.ScaleHeight - HEADER_HEIGHT
         
             UpdateScrollBar

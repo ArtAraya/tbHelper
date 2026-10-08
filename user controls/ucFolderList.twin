@@ -25,19 +25,6 @@ Class ucFolderList
 
     End Property
     
-    Private mFolderOpen As StdPicture
-    Private mFolderClosed As StdPicture
-
-    Public Property Set FolderOpenIcon(pic As StdPicture)
-        Set mFolderOpen = pic
-        ilIcons.ListImages.Add FOLDER_OPEN_ICON, "folder_open", mFolderOpen
-    End Property
-
-    Public Property Set FolderClosedIcon(pic As StdPicture)
-        Set mFolderClosed = pic
-        ilIcons.ListImages.Add FOLDER_CLOSED_ICON, "folder_closed", mFolderClosed
-    End Property
-        
     Public Function Update() As Boolean
         
         On Error GoTo UpdateFailed
@@ -73,13 +60,27 @@ Class ucFolderList
     Private Sub UserControl_Initialize()
         
         ' Setup ImageList using our own bundled icon files.
+
         CalculateDPIValues
+        
+        Dim icoFolderClosed As StdPicture
+        Dim icoFolderOpen As StdPicture
        
         ' Style the TreeView to match your UI
         tvFolders.BorderStyle = vbBSNone
         tvFolders.LineStyle = tvwRootLines
         tvFolders.FontName = "Segoe UI"
         tvFolders.FontSize = m_DPIFontSize
+        
+        On Error Resume Next
+        Set icoFolderClosed = LoadPicture(ImageFilePath("folder_closed.ico"))
+        Set icoFolderOpen = LoadPicture(ImageFilePath("folder_open.ico"))
+        If Not icoFolderClosed Is Nothing Then ilIcons.ListImages.Add FOLDER_CLOSED_ICON, "folder_closed", icoFolderClosed
+        If Not icoFolderOpen Is Nothing Then ilIcons.ListImages.Add FOLDER_OPEN_ICON, "folder_open", icoFolderOpen
+        On Error GoTo 0
+
+        ' Assign ImageList to TreeView
+        Set tvFolders.ImageList = ilIcons
         
         'ApplyBottomRoundedCorners tvFolders, 4, 4, True         ' Then apply to the tree
 
@@ -276,8 +277,4 @@ Class ucFolderList
         Loop
         
     End Function
-    
-    Private Sub UserControl_Show()
-        Set tvFolders.ImageList = ilIcons
-    End Sub
 End Class

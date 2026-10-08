@@ -67,6 +67,7 @@ Class ucChangeLog
     
     'Private Const ROW_HEIGHT = 40
     Private Const HEADER_HEIGHT = 500
+    Private Const SCROLL_WIDTH = 200
     Private Const BASE_DPI = 96
 
     Public Sub Clear()
@@ -156,7 +157,7 @@ Class ucChangeLog
             .Left = 0
             .Top = 0
             .ScaleMode = vbPixels
-            .Width = UserControl.ScaleWidth - 200
+            .Width = UserControl.ScaleWidth - SCROLL_WIDTH
             .Height = HEADER_HEIGHT
             .BackColor = RGB(189, 189, 189)
             .BorderStyle = 0 ' None
@@ -174,7 +175,7 @@ Class ucChangeLog
         With m_Canvas
             .Left = 0
             .Top = HEADER_HEIGHT
-            .Width = UserControl.ScaleWidth - 200 ' Leave space for scrollbar
+            .Width = UserControl.ScaleWidth - SCROLL_WIDTH ' Leave space for scrollbar
             .Height = UserControl.ScaleHeight - HEADER_HEIGHT
             .BackColor = BACKGROUND_COLOR
             .BorderStyle = 0 ' None
@@ -188,9 +189,9 @@ Class ucChangeLog
         ' Create vertical scrollbar
         Set m_VScrollBar = Controls.Add("VB.VScrollBar", "VScroll")
         With m_VScrollBar
-            .Left = UserControl.ScaleWidth - 200
+            .Left = UserControl.ScaleWidth - SCROLL_WIDTH
             .Top = HEADER_HEIGHT
-            .Width = 200
+            .Width = SCROLL_WIDTH
             .Height = UserControl.ScaleHeight - HEADER_HEIGHT
             .Min = 0
             .Max = 0
@@ -304,10 +305,10 @@ Class ucChangeLog
         SetBkMode hdc, 1
         SetTextColor hdc, TEXT_COLOR_DARK
 
-        xPos = 20
+        xPos = ScaleDesignPx(20)
         Dim col As clsChangeLogColumn
         For Each col In m_Columns
-            TextOut hdc, xPos, 8, col.Name, Len(col.Name)
+            TextOut hdc, xPos, ScaleDesignPx(8), col.Name, Len(col.Name)
             xPos = xPos + col.Width
         Next
         
@@ -344,8 +345,8 @@ Class ucChangeLog
         m_Canvas.Cls
         m_Canvas.BackColor = BACKGROUND_COLOR
     
-        ' Calculate visible range
-        visibleEntries = Int(m_Canvas.Height / m_DPIRowHeight) + 1
+        ' Calculate visible range from the HWND client size (device pixels)
+        visibleEntries = Int(ClientHeightPx(m_Canvas.hWnd) / m_DPIRowHeight) + 1
         startIndex = m_ScrollOffset
         endIndex = startIndex + visibleEntries
     
@@ -418,7 +419,7 @@ Class ucChangeLog
         ' create the rect using the precalculated height
         rowRect.Left = 0
         rowRect.Top = yPos
-        rowRect.Right = m_Canvas.Width
+        rowRect.Right = ClientWidthPx(m_Canvas.hWnd)
         rowRect.Bottom = yPos + thisRowHeight
         entry.EntryHeight = thisRowHeight
 
@@ -427,7 +428,7 @@ Class ucChangeLog
         DeleteObject hBrush
 
         SetBkMode hdc, 1
-        xPos = 20
+        xPos = ScaleDesignPx(20)
 
         For Each col In m_Columns
             
@@ -441,14 +442,14 @@ Class ucChangeLog
                 Case "VERSION"
                     SelectObject hdc, m_DefaultFont
                     SetTextColor hdc, TEXT_COLOR_VERSION
-                    TextOut hdc, xPos + lineXPos, yPos + 12, value, Len(value)
+                    TextOut hdc, xPos + lineXPos, yPos + ScaleDesignPx(12), value, Len(value)
                 Case "TYPE"
-                    If Len(entry.TypeText) > 0 Then DrawTypeBadge(hdc, xPos, yPos + 8, entry)
+                    If Len(entry.TypeText) > 0 Then DrawTypeBadge(hdc, xPos, yPos + ScaleDesignPx(8), entry)
                 Case "DESCRIPTION"
                     SelectObject hdc, m_DefaultFont
                     SetTextColor hdc, TEXT_COLOR_DARK
 
-                    Dim lineYPos As Long = IIf(requiredLines < 2, yPos + 12, yPos + 6)
+                    Dim lineYPos As Long = IIf(requiredLines < 2, yPos + ScaleDesignPx(12), yPos + ScaleDesignPx(6))
                     
                     Dim descrLine As String
                     Dim eachLineHeight As Long = (thisRowHeight / (requiredLines + 1))
@@ -462,7 +463,7 @@ Class ucChangeLog
                 Case Else
                     SelectObject hdc, m_DefaultFont
                     SetTextColor hdc, TEXT_COLOR_DARK
-                    TextOut hdc, xPos + lineXPos, yPos + 12, value, Len(value)
+                    TextOut hdc, xPos + lineXPos, yPos + ScaleDesignPx(12), value, Len(value)
                 Case Else
                     
             End Select
@@ -614,7 +615,7 @@ Class ucChangeLog
         
         ' check to see if the scrollbar is needed, if so convert the pixel row height to twips to calculate that
         If Not m_Canvas Is Nothing Then
-            visibleRows = Int(m_Canvas.Height / (m_DPIRowHeight * Screen.TwipsPerPixelX))
+            visibleRows = Int(ClientHeightPx(m_Canvas.hWnd) / m_DPIRowHeight)
         End If
     
         If filteredCount > visibleRows Then
@@ -648,12 +649,12 @@ Class ucChangeLog
         
     Private Sub UserControl_Resize()
         If Not m_Canvas Is Nothing Then
-            m_HeaderCanvas.Width = UserControl.ScaleWidth - 200
+            m_HeaderCanvas.Width = UserControl.ScaleWidth - SCROLL_WIDTH
         
-            m_Canvas.Width = UserControl.ScaleWidth - 200
+            m_Canvas.Width = UserControl.ScaleWidth - SCROLL_WIDTH
             m_Canvas.Height = UserControl.ScaleHeight - HEADER_HEIGHT
         
-            m_VScrollBar.Left = UserControl.ScaleWidth - 200
+            m_VScrollBar.Left = UserControl.ScaleWidth - SCROLL_WIDTH
             m_VScrollBar.Height = UserControl.ScaleHeight - HEADER_HEIGHT
         
             UpdateScrollBar

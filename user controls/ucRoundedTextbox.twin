@@ -85,13 +85,11 @@ Class ucRoundedTextbox
     
     Private Sub ApplyRoundedRegion()
         
-        ' Claude version
         If Width <= 0 Or Height <= 0 Then Exit Sub
     
-        ' Convert from twips to pixels
-        Dim w As Long: w = Width \ Screen.TwipsPerPixelX
-        Dim h As Long: h = Height \ Screen.TwipsPerPixelY
-        Dim r As Long: r = m_BorderRadius
+        Dim w As Long, h As Long
+        GetClientSizePx UserControl.hWnd, w, h
+        Dim r As Long: r = ScaleDesignPx(m_BorderRadius)
     
         ' Create the rounded rectangle region
         Dim rgn As Long

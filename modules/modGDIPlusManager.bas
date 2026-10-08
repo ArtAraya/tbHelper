@@ -65,14 +65,15 @@ Public Sub ApplyRoundedRegion(toWhichControl As Control, borderRadius As Long)
         ctrlName = toWhichControl.name
     End If
     
-    ctrlWidth = toWhichControl.Width
-    ctrlHeight = toWhichControl.Height
+    ' SetWindowRgn works in device pixels. Use the HWND client size rather than
+    ' Width \ TwipsPerPixelX; that conversion clips the region when DPI > 100%.
+    GetClientSizePx toWhichControl.hWnd, ctrlWidth, ctrlHeight
     
     If ctrlWidth <= 0 Or ctrlHeight <= 0 Then Exit Sub
     If borderRadius <= 0 Then Exit Sub
     
-    Dim w As Long: w = ctrlWidth \ Screen.TwipsPerPixelX
-    Dim h As Long: h = ctrlHeight \ Screen.TwipsPerPixelY
+    Dim w As Long: w = ctrlWidth
+    Dim h As Long: h = ctrlHeight
     Dim r As Long: r = borderRadius
         
     Dim rgn As Long
@@ -287,22 +288,26 @@ Public Sub InvalidateLabelRegion(lbl As Label)
     ' the update of the tB version label lags, this is an attempt 
     ' at fixing it by finding a region (the lable area) on the form
     ' and having it updated
+    ' Labels are windowless in twinBASIC/VB, so they have no hWnd.
+    ' Convert the label bounds from the parent ScaleMode into device pixels.
     
     'WriteToDebugLogFile("InvalidateLabelRegion for '" & lbl.Name & "'")
     
     Dim rc As RECT
+    Dim parentCtrl As Object
+    Set parentCtrl = lbl.Parent
     
     With rc
-        .Left = lbl.Left / Screen.TwipsPerPixelX
-        .Right = (lbl.Left + lbl.Width) / Screen.TwipsPerPixelX
-        .Top = lbl.Top / Screen.TwipsPerPixelY
-        .Bottom = (lbl.Top + lbl.Height) / Screen.TwipsPerPixelY
+        .Left = CLng(parentCtrl.ScaleX(lbl.Left, parentCtrl.ScaleMode, vbPixels))
+        .Top = CLng(parentCtrl.ScaleY(lbl.Top, parentCtrl.ScaleMode, vbPixels))
+        .Right = CLng(parentCtrl.ScaleX(lbl.Left + lbl.Width, parentCtrl.ScaleMode, vbPixels))
+        .Bottom = CLng(parentCtrl.ScaleY(lbl.Top + lbl.Height, parentCtrl.ScaleMode, vbPixels))
     End With
     
-    InvalidateRect lbl.Parent.hWnd, rc, 1
-    UpdateWindow lbl.Parent.hWnd
+    InvalidateRect parentCtrl.hWnd, rc, 1
+    UpdateWindow parentCtrl.hWnd
     
-    QueueRedraw(lbl.Parent.hWnd)
+    QueueRedraw parentCtrl.hWnd
     
 End Sub
 Public Sub UpdateScrollOwnership(ByVal hWnd As LongPtr, ByVal newPos As Long)

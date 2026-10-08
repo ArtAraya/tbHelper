@@ -10,6 +10,8 @@ Public Sub ApplyRoundedCorners(ctl As Object, ByVal RadiusX As Long, ByVal Radiu
     GetClientRect ctl.hWnd, clientRect
     
     controlName = ctl.name
+    RadiusX = ScaleDesignPx(RadiusX)
+    RadiusY = ScaleDesignPx(RadiusY)
     
     ' clientRect.Right IS the width in pixels.
     ' clientRect.Bottom IS the height in pixels.
@@ -32,6 +34,8 @@ Public Sub ApplyBottomRoundedCorners(ctl As Object, ByVal RadiusX As Long, ByVal
     
     ' Get the dimensions of the control's CLIENT area (the part inside borders/scrollbars)
     GetClientRect ctl.hWnd, clientRect
+    RadiusX = ScaleDesignPx(RadiusX)
+    RadiusY = ScaleDesignPx(RadiusY)
     
     Dim PxWidth As Long
     Dim PxHeight As Long

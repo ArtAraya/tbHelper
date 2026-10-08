@@ -25,7 +25,7 @@ Class ucCustomButton
     Private m_IsPressed As Boolean
     Private m_FontSize As Long
 
-    'Private m_PngName As String
+    Private m_PngName As String
     Private m_PngBitmap As Long
     Private m_Enabled As Boolean
     Private m_ButtonWidth As Long
@@ -39,13 +39,6 @@ Class ucCustomButton
     Public Event MouseLeave()
     
     ' Properties
-    Public Property Let ButtonImagePtr(ByVal Value As LongPtr)
-        
-        m_PngBitmap = Value
-        
-        RedrawCanvas()
-    End Property
-    
     Public Property Let ButtonWidth(ByVal Value As Long)
         ''WriteToDebugLogFile " ucCustomButton: ButtonWidth set to " & Value
         m_ButtonWidth = Value
@@ -76,15 +69,15 @@ Class ucCustomButton
         Enabled = m_Enabled
     End Property
     
-    ' Public Property Let PngIconPath(ByVal Value As String)
-    '     ''WriteToDebugLogFile " ucCustomButton: PngIconPath set to " & Value
-    '     m_PngName = Value
-    '     LoadPngIcon
-    '     RequestRedraw
-    ' End Property
-    ' Public Property Get PngIconPath() As String
-    '     PngIconPath = m_PngName
-    ' End Property
+    Public Property Let PngIconPath(ByVal Value As String)
+        ''WriteToDebugLogFile " ucCustomButton: PngIconPath set to " & Value
+        m_PngName = Value
+        LoadPngIcon
+        RequestRedraw
+    End Property
+    Public Property Get PngIconPath() As String
+        PngIconPath = m_PngName
+    End Property
     
     Public Property Let Caption(ByVal Value As String)
         ''WriteToDebugLogFile " ucCustomButton: Caption set to " & Value
@@ -216,10 +209,11 @@ Class ucCustomButton
         m_DefaultCursor = GetCursor ' save the default mouse cursor
         
         'get the mouse cursor that indicates the button is disabled
-        'm_DisabledCursor = LoadCursorFromFile(App.Path & "\disabled.cur")  ' TODO: the disabled current cursor sucks and needs to be replaced 
+        'm_DisabledCursor = LoadCursorFromFile(ImageFilePath("disabled.cur"))  ' TODO: the disabled current cursor sucks and needs to be replaced 
         
         UserControl.BackColor = m_BackColor
         UserControl.Font.Bold = m_FontBold
+        UserControl.ScaleMode = vbPixels
         
     End Sub
     
@@ -244,47 +238,40 @@ Class ucCustomButton
         If Not GDIPlus_IsStarted() Then Exit Sub
 
         ''WriteToDebugLogFile "     ucCustomButton: RedrawCanvas - start for: " & IIf(m_Caption = "", m_PngName, m_Caption)
-        'Cls
+        Cls
         
-        ' Calculate positions for icon and text, all in twips
-        Dim iconWidthTw As Long
-        Dim iconSpacingTw As Long
-        Dim textWidthTw As Long
-        Dim totalContentWidthTw As Long
-        Dim startXTw As Long
-        Dim iconXTw As Long, iconYTw As Long
-        Dim textXTw As Long, textYTw As Long
+        ' ScaleMode is vbPixels: layout, TextWidth, and GDI+ all use device pixels
+        Dim iconWidthPx As Long
+        Dim iconSpacingPx As Long
+        Dim textWidthPx As Long
+        Dim totalContentWidthPx As Long
+        Dim startXPx As Long
+        Dim iconXPx As Long, iconYPx As Long
+        Dim textXPx As Long, textYPx As Long
 
-        ' Measure text (returns twips)
-        textWidthTw = TextWidth(m_Caption)
-        textYTw = (ScaleHeight - TextHeight(m_Caption)) \ 2
+        textWidthPx = TextWidth(m_Caption)
+        textYPx = (ScaleHeight - TextHeight(m_Caption)) \ 2
 
-        ' Compute icon width & spacing in twips
         If m_PngBitmap <> 0 Then
-            iconWidthTw = m_IconSize * Screen.TwipsPerPixelX
-            iconSpacingTw = IIf(Len(m_Caption) > 0, m_IconSpacing * Screen.TwipsPerPixelX, 0)
+            iconWidthPx = m_IconSize
+            iconSpacingPx = IIf(Len(m_Caption) > 0, m_IconSpacing, 0)
         Else
-            iconWidthTw = 0
-            iconSpacingTw = 0
+            iconWidthPx = 0
+            iconSpacingPx = 0
         End If
 
-        ' Total width = icon + spacing + text
-        totalContentWidthTw = iconWidthTw + iconSpacingTw + textWidthTw
+        totalContentWidthPx = iconWidthPx + iconSpacingPx + textWidthPx
+        startXPx = (ScaleWidth - totalContentWidthPx) \ 2
 
-        ' Center that block
-        startXTw = (ScaleWidth - totalContentWidthTw) \ 2
-
-        ' if there is an icon, draw it on the button
-        If iconWidthTw > 0 Then
-            iconXTw = startXTw
-            iconYTw = (ScaleHeight - (m_IconSize * Screen.TwipsPerPixelY)) \ 2
-            DrawPngIcon iconXTw, iconYTw
+        If iconWidthPx > 0 Then
+            iconXPx = startXPx
+            iconYPx = (ScaleHeight - m_IconSize) \ 2
+            DrawPngIcon iconXPx, iconYPx
         End If
 
-        ' write to the button
-        textXTw = startXTw + iconWidthTw + iconSpacingTw
-        CurrentX = textXTw
-        CurrentY = textYTw
+        textXPx = startXPx + iconWidthPx + iconSpacingPx
+        CurrentX = textXPx
+        CurrentY = textYPx
         Print m_Caption
         ''WriteToDebugLogFile "     ucCustomButton: RedrawCanvas -end"
         
@@ -333,12 +320,12 @@ Class ucCustomButton
     
     Private Sub DrawPngIcon(ByVal iconX As Long, ByVal iconY As Long)
         If m_PngBitmap = 0 Then Exit Sub
-            
-        ' Convert twips to pixels and add positioning adjustments
+    
+        ' Coordinates are already device pixels (UserControl.ScaleMode = vbPixels)
         Dim pixelX As Long, pixelY As Long, pixelSize As Long
         
-        pixelX = (iconX \ Screen.TwipsPerPixelX)
-        pixelY = iconY \ Screen.TwipsPerPixelY
+        pixelX = iconX
+        pixelY = iconY
         pixelSize = m_IconSize
     
         ' Ensure icon stays within button bounds
@@ -360,7 +347,7 @@ Class ucCustomButton
     
     Private Sub DrawLayoutDebug(ByVal iconX As Long, ByVal iconY As Long, ByVal iconWidth As Long, ByVal textX As Long, ByVal textY As Long, ByVal textWidth As Long)
         ' Draw icon bounding box in red
-        Line (iconX, iconY)-Step(iconWidth * Screen.TwipsPerPixelX, m_IconSize * Screen.TwipsPerPixelY), RGB(255, 0, 0), B
+        Line (iconX, iconY)-Step(iconWidth, m_IconSize), RGB(255, 0, 0), B
 
         ' Draw text bounding box in green
         Line (textX, textY)-Step(textWidth, TextHeight(m_Caption)), RGB(0, 255, 0), B
@@ -476,7 +463,6 @@ Class ucCustomButton
     End Sub
 
     Private Sub UserControl_Terminate()
-        
         If m_PngBitmap <> 0 Then
             GdipDisposeImage m_PngBitmap
         End If
@@ -486,23 +472,60 @@ Class ucCustomButton
         On Error GoTo 0
         
     End Sub
+
+    ' Add method to load PNG file
+    Private Sub LoadPngIcon()
+        On Error Resume Next
+        If m_PngBitmap <> 0 Then
+            GdipDisposeImage m_PngBitmap
+            m_PngBitmap = 0
+        End If
     
+        If Len(m_PngName) > 0 And Dir(m_PngName) <> "" Then
+            Dim result As Long
+            result = GdipCreateBitmapFromFile(StrPtr(m_PngName), m_PngBitmap)
+            If result <> 0 Then
+                m_PngBitmap = 0
+            End If
+        End If
+    End Sub
+ 
     ' Private Sub LoadPngIcon()
-    '     ' was loading the passed image path - not used 2-15-26
+        
     '     If m_PngBitmap <> 0 Then
     '         GdipDisposeImage m_PngBitmap
     '         m_PngBitmap = 0
     '     End If
-    
-    '     If Len(m_PngName) > 0 And Dir(m_PngName) <> "" Then
-    '         Dim result As Long
-    '         result = GdipCreateBitmapFromFile(StrPtr(m_PngName), m_PngBitmap)
-    '         If result <> 0 Then
-    '             m_PngBitmap = 0
-    '         End If
-    '     End If
-    ' End Sub
 
+    '     If Len(m_PngName) = 0 Then Exit Sub
+
+    '     Dim hRes As Long, hGlobal As Long, lpData As Long
+    '     Dim pStream As IUnknown
+    '     Dim result As Long
+
+    '     ' Locate and load the PNG resource
+    '     Dim testName As String = Replace(m_PngName, ".png", "")
+        
+    '     hRes = FindResource(0, StrPtr(testName), StrPtr("PNG"))
+    '     If hRes = 0 Then Exit Sub
+
+    '     hGlobal = LoadResource(0, hRes)
+    '     If hGlobal = 0 Then Exit Sub
+
+    '     lpData = LockResource(hGlobal)
+    '     If lpData = 0 Then Exit Sub
+
+    '     ' Create IStream from memory
+    '     result = CreateStreamOnHGlobal(hGlobal, False, pStream)
+    '     If result <> 0 Then Exit Sub
+
+    '     ' Create GDI+ bitmap from stream
+    '     result = GdipCreateBitmapFromStream(pStream, m_PngBitmap)
+    '     If result <> 0 Then
+    '         m_PngBitmap = 0
+    '     End If
+        
+    ' End Sub
     Private Sub tmrMouseTracker_Timer()
         Dim pt As POINTAPI
         Dim cx As Long, cy As Long
@@ -515,9 +538,8 @@ Class ucCustomButton
         GetCursorPos pt
         ScreenToClient UserControl.hWnd, pt    ' this should be more precise
         
-        ' use twips of course
-        cx = ScaleWidth \ Screen.TwipsPerPixelX
-        cy = ScaleHeight \ Screen.TwipsPerPixelY
+        ' ScreenToClient is device pixels; match against the HWND client size
+        GetClientSizePx UserControl.hWnd, cx, cy
     
         'WriteToDebugLogFile("            ucCustomButton: coordinates, pt.X=" & pt.X & ", pt.Y=" & pt.Y & ", cx=" & cx & ", cy=" & cy)
         

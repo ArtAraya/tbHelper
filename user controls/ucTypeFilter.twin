@@ -164,8 +164,8 @@ Class ucTypeFilter
     End Sub
     
     Private Function CalcAutoWidth() As Long
-        ' A rough estimate: average character width × number of letters + padding
-        Const charWidth As Long = 90 ' Approx. width per character in twips
+        ' A rough estimate: average character width x number of letters + padding
+        Const charWidth As Long = 90 ' approx. width per character in the UC's scale units
         CalcAutoWidth = Len(lblCaption.Caption) * charWidth + 300
     End Function
     
@@ -185,9 +185,12 @@ Class ucTypeFilter
         If Width <= 0 Or Height <= 0 Or m_BorderRadius = 0 Then Exit Sub
 
         Dim w As Long, h As Long, r As Long
-        w = Width \ Screen.TwipsPerPixelX
-        h = Height \ Screen.TwipsPerPixelY
-        r = h \ m_BorderRadius
+        GetClientSizePx UserControl.hWnd, w, h
+        If m_BorderRadius > 0 Then
+            r = h \ m_BorderRadius
+        Else
+            r = h
+        End If
 
         Dim rgn As Long
         rgn = CreateRoundRectRgn(0, 0, w, h, r, r)

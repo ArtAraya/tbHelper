@@ -86,6 +86,8 @@ Class ucRTFMessage
     
     Private Sub UserControl_Initialize()
         
+        UserControl.ScaleMode = vbPixels
+        
         ' Get the horizontal and vertical DPI values
         m_DPI_Horizontal = GetDeviceCaps(hDC, LOGPIXELSX)
         m_DPI_Vertical = GetDeviceCaps(hDC, LOGPIXELSY)
@@ -140,15 +142,9 @@ Class ucRTFMessage
     
     Private Sub UserControl_Resize()
         If Not m_Canvas Is Nothing Then
-        
-            m_Canvas.Width = UserControl.ScaleWidth - 25
-            m_Canvas.Height = UserControl.ScaleHeight - 25
-            
-            ' the size that the control requires should be available to the calling code
-            m_RequiredWidth = m_Canvas.Width
-            m_RequiredHeight = m_Canvas.Height
-            
-            'm_Canvas.Refresh()
+            ' Fill the control. The old "- 25" inset was twips at 96 DPI and
+            ' became a large hole (or a wrap-width error) once ScaleMode is pixels.
+            m_Canvas.Move 0, 0, UserControl.ScaleWidth, UserControl.ScaleHeight
             DrawMessage
         End If
     End Sub
@@ -179,13 +175,27 @@ Class ucRTFMessage
         Dim hDC As Long
         Dim x As Long, y As Long
         Dim canvasWidth As Long
+        Dim canvasHeight As Long
         Dim lineHeight As Long
         Dim spacePadding As Long: spacePadding = MulDiv(6, m_DPI_Vertical, BASE_DPI)
         Dim segCount As Integer
         Dim debugSegmentWritten As String
+        Dim maxWordPx As Long
+        Dim maxLinePx As Long
+        Dim bottomPad As Long
+        
+        If m_Canvas Is Nothing Then Exit Sub
+        If Len(m_Message) = 0 Then
+            m_RequiredWidth = 0
+            m_RequiredHeight = 0
+            Exit Sub
+        End If
         
         hDC = m_Canvas.hDC
-        canvasWidth = m_Canvas.Width \ Screen.TwipsPerPixelX
+        ' TextOut is in device pixels. Width \ TwipsPerPixelX overestimates the
+        ' wrap point when DPI > 100%, so text is drawn past the visible HWND.
+        GetClientSizePx m_Canvas.hWnd, canvasWidth, canvasHeight
+        If canvasWidth <= 1 Then canvasWidth = m_Canvas.ScaleWidth
         x = 0: y = MulDiv(10, m_DPI_Vertical, BASE_DPI) ' give a little padding at the top of the message area
 
         Dim segments As Collection
@@ -219,8 +229,11 @@ Class ucRTFMessage
                     Dim sz As SIZE
                     GetTextExtentPoint32 hDC, word, Len(word), sz
 
-                    ' Wrap if needed
-                    If x + sz.cx > canvasWidth Then
+                    If sz.cx > maxWordPx Then maxWordPx = sz.cx
+                    If sz.cy > lineHeight Then lineHeight = sz.cy
+
+                    ' Wrap if needed (lineHeight must already be known)
+                    If x > 0 And x + sz.cx > canvasWidth Then
                         x = 0
                         y = y + lineHeight
                     End If
@@ -228,9 +241,7 @@ Class ucRTFMessage
                     ' Draw word
                     TextOut hDC, x, y, word, Len(word)
                     x = x + sz.cx
-
-                    ' Track tallest line height
-                    If sz.cy > lineHeight Then lineHeight = sz.cy
+                    If x > maxLinePx Then maxLinePx = x
 
                     DeleteObject hFont
                 Next i
@@ -239,8 +250,10 @@ Class ucRTFMessage
             
         Next
 
-        ' Optional: store required height for autosizing
-        m_RequiredHeight = y + lineHeight
+        bottomPad = MulDiv(8, m_DPI_Vertical, BASE_DPI)
+        m_RequiredHeight = y + lineHeight + bottomPad
+        m_RequiredWidth = maxWordPx
+        If maxLinePx > m_RequiredWidth Then m_RequiredWidth = maxLinePx
         
         'm_Canvas.Refresh()
         QueueRedraw(m_Canvas.hWnd)
