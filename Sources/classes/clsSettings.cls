@@ -27,6 +27,10 @@ Private _logActivity As Integer = 0
 Private _settingsFileLoaded As Boolean = False
 Private _settingsChanged As Boolean = False
 Private _saveSettingsOnExit As Integer = 0
+Private _runInSystemTray As Integer = 0
+Private _startTrayWithWindows As Integer = 0
+Private _trayCheckIntervalMinutes As Integer = 240
+Private _lastNotifiedVersion As Integer = 0
 
 Private Sub Class_Initialize()
     ' Folder objects must exist even when settings.txt is missing.
@@ -81,6 +85,15 @@ Public Function LoadSettings() As Boolean
                     _starttwinBASICAfterUpdate = CInt(settingValue)
                 Case "Log updates"
                     _logActivity = CInt(settingValue)
+                Case "Run in system tray"
+                    _runInSystemTray = CInt(settingValue)
+                Case "Start tray with Windows"
+                    _startTrayWithWindows = CInt(settingValue)
+                Case "Tray check interval minutes"
+                    _trayCheckIntervalMinutes = CInt(settingValue)
+                    If _trayCheckIntervalMinutes < 1 Then _trayCheckIntervalMinutes = 240
+                Case "Last notified version"
+                    _lastNotifiedVersion = CInt(settingValue)
             End Select
         End If
     Next
@@ -102,6 +115,10 @@ Public Function SaveSettings() As Boolean
         .WriteLine("Check for new version on load: " & CStr(_checkForNewVersionOnLoad))
         .WriteLine("Start twinBASIC after update: " & CStr(_starttwinBASICAfterUpdate))
         .WriteLine("Log updates: " & CStr(_logActivity))
+        .WriteLine("Run in system tray: " & CStr(_runInSystemTray))
+        .WriteLine("Start tray with Windows: " & CStr(_startTrayWithWindows))
+        .WriteLine("Tray check interval minutes: " & CStr(_trayCheckIntervalMinutes))
+        .WriteLine("Last notified version: " & CStr(_lastNotifiedVersion))
         .Close()
     End With
     SaveSettings = True
@@ -181,4 +198,42 @@ End Property
 
 Public Property Get SaveSettingsOnExit() As Integer
     SaveSettingsOnExit = _saveSettingsOnExit
+End Property
+
+Public Property Let RunInSystemTray(ByVal vData As Integer)
+    _runInSystemTray = vData
+    _settingsChanged = True
+End Property
+
+Public Property Get RunInSystemTray() As Integer
+    RunInSystemTray = _runInSystemTray
+End Property
+
+Public Property Let StartTrayWithWindows(ByVal vData As Integer)
+    _startTrayWithWindows = vData
+    _settingsChanged = True
+End Property
+
+Public Property Get StartTrayWithWindows() As Integer
+    StartTrayWithWindows = _startTrayWithWindows
+End Property
+
+Public Property Let TrayCheckIntervalMinutes(ByVal vData As Integer)
+    If vData < 1 Then vData = 240
+    _trayCheckIntervalMinutes = vData
+    _settingsChanged = True
+End Property
+
+Public Property Get TrayCheckIntervalMinutes() As Integer
+    If _trayCheckIntervalMinutes < 1 Then _trayCheckIntervalMinutes = 240
+    TrayCheckIntervalMinutes = _trayCheckIntervalMinutes
+End Property
+
+Public Property Let LastNotifiedVersion(ByVal vData As Integer)
+    _lastNotifiedVersion = vData
+    _settingsChanged = True
+End Property
+
+Public Property Get LastNotifiedVersion() As Integer
+    LastNotifiedVersion = _lastNotifiedVersion
 End Property

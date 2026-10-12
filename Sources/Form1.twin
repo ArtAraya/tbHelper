@@ -74,6 +74,15 @@ Class Form1
         If Err.Number <> 0 Then StartupTraceError "Form_Load delete debug_log"
         On Error GoTo FormLoadFailed
         
+        If Not CommandHasSwitch("/resume") Then
+            If ActivateExistingInstance() Then
+                g_TrayExitRequested = True
+                Unload Me
+                End
+            End If
+        End If
+        g_StartedInTray = CommandHasSwitch("/tray") And Not CommandHasSwitch("/resume")
+        
         StartupTrace "Form_Load LoadImages"
         LoadImages
         StartupTrace "Form_Load folder icons"
@@ -93,7 +102,7 @@ Class Form1
         End If
                 
         StartupTrace "Form_Load caption"
-        Me.Caption = "tBHelper (RC1 12-22-25)"
+        Me.Caption = TBHELPER_WINDOW_CAPTION
         
         'WriteToDebugLogFile "Form load"
         
@@ -112,7 +121,12 @@ Class Form1
         SetChangeLogHeader
           
         StartupTrace "Form_Load Show"
-        Me.Show
+        If Not g_StartedInTray Then
+            Me.Show
+        Else
+            Me.ShowInTaskbar = False
+            Me.Visible = False
+        End If
         Me.MousePointer = vbHourglass
         
         Set activeTypeFilters = New Scripting.Dictionary
@@ -169,7 +183,7 @@ Class Form1
         isResume = ParseResumeCommand(resumeSwitch, resumeZip)
         
         ' this continues to check for version info if the folders are valid
-        If Not isResume Then
+        If Not isResume And Not g_StartedInTray Then
             If tbHelperSettings.CheckForNewVersionOnLoad Then
                 StartupTrace "Form_Load CheckForNewVersion"
                 CheckForNewVersion
@@ -209,6 +223,11 @@ Class Form1
             On Error GoTo FormLoadFailed
         End If
         
+        If tbHelperSettings.RunInSystemTray Or g_StartedInTray Then
+            StartupTrace "Form_Load StartTrayMonitor"
+            StartTrayMonitor
+        End If
+        
         StartupTrace "Form_Load leave"
         StartupTraceSucceeded
         Exit Sub
@@ -232,7 +251,17 @@ FormLoadFailed:
     
     Private Sub Form_Unload(Cancel As Integer)
 
+        If Not g_TrayExitRequested And Not tbHelperSettings Is Nothing Then
+            If tbHelperSettings.RunInSystemTray And TrayIconIsActive() Then
+                Cancel = True
+                HideToTray
+                Exit Sub
+            End If
+        End If
+
         formIsClosing = True
+        tmrTrayCheck.Enabled = False
+        RemoveTrayIcon
         
         On Error Resume Next
         If Not tbHelperSettings Is Nothing Then
@@ -556,6 +585,48 @@ FormLoadFailed:
         FlushRedraws
     End Sub
     
+    Private Sub tsRunInSystemTray_StateChanged(ByVal NewState As Boolean)
+        If isAPanelDisplayed Then Exit Sub
+        
+        tbHelperSettings.RunInSystemTray = NewState
+        If loadingSettingsFromFile Then Exit Sub
+        
+        If NewState Then
+            StartTrayMonitor
+            MessageBox("tBHelper will keep a system tray icon after you close this window. It will check for a new twinBASIC version in the background and show a toaster when one is available.", _
+                "info", "System tray monitor")
+        Else
+            tbHelperSettings.StartTrayWithWindows = False
+            tsStartTrayWithWindows.IsOn = False
+            ApplyTrayStartupShortcut False
+            tmrTrayCheck.Enabled = False
+            RemoveTrayIcon
+            g_StartedInTray = False
+        End If
+        FlushRedraws
+    End Sub
+    
+    Private Sub tsStartTrayWithWindows_StateChanged(ByVal NewState As Boolean)
+        If isAPanelDisplayed Then Exit Sub
+        
+        If NewState And Not tbHelperSettings.RunInSystemTray Then
+            tbHelperSettings.RunInSystemTray = True
+            tsRunInSystemTray.IsOn = True
+        End If
+        
+        tbHelperSettings.StartTrayWithWindows = NewState
+        If loadingSettingsFromFile Then Exit Sub
+        
+        If NewState And IsCodeRunningInTheIDE() Then
+            MessageBox("Start with Windows uses the compiled tBHelper.exe. It cannot be registered from the IDE.", "info", "Start tray with Windows")
+            Exit Sub
+        End If
+        
+        ApplyTrayStartupShortcut NewState
+        If NewState And Not TrayIconIsActive() Then StartTrayMonitor
+        FlushRedraws
+    End Sub
+    
     Private Sub txtDownloadFolder_LostFocus()
         
         ' check for the message box displaying or the form is closing
@@ -793,6 +864,8 @@ FormLoadFailed:
             .tsStartTB.IsOn = tbHelperSettings.StarttwinBASICAfterUpdate
             .tsLogActivity.IsOn = tbHelperSettings.LogActivity
             .tsSaveSettingsOnExit.IsOn = tbHelperSettings.SaveSettingsOnExit
+            .tsRunInSystemTray.IsOn = tbHelperSettings.RunInSystemTray
+            .tsStartTrayWithWindows.IsOn = tbHelperSettings.StartTrayWithWindows
         End With
     
     End Sub
@@ -1401,6 +1474,8 @@ ideCheckFailed:
         ConfigureToggleSlider tsLogActivity
         ConfigureToggleSlider tsLookForUpdateAtLaunch
         ConfigureToggleSlider tsSaveSettingsOnExit
+        ConfigureToggleSlider tsRunInSystemTray
+        ConfigureToggleSlider tsStartTrayWithWindows
     End Sub
     
     Private Sub SetupTypeFilterButtons()
@@ -2322,6 +2397,173 @@ ideCheckFailed:
             FolderList.SetFocus()
             frmInnerSelectFolder.Refresh()
         End If
+    End Sub
+    
+    '******************************************************
+    '**** System tray monitor
+    '******************************************************
+    Private m_trayMinuteCount As Long
+    Private m_trayFirstCheckPending As Boolean
+    
+    Private Sub StartTrayMonitor()
+        On Error Resume Next
+        AddTrayIcon
+        ApplyTrayStartupShortcut CBool(tbHelperSettings.StartTrayWithWindows)
+        m_trayMinuteCount = 0
+        m_trayFirstCheckPending = True
+        tmrTrayCheck.Interval = 5000
+        tmrTrayCheck.Enabled = True
+        UpdateActivityLog "System tray monitor started"
+        If g_StartedInTray Then HideToTray
+        Err.Clear
+    End Sub
+    
+    Private Sub HideToTray()
+        On Error Resume Next
+        If Not TrayIconIsActive() Then AddTrayIcon
+        Me.ShowInTaskbar = False
+        Me.Hide
+        Err.Clear
+    End Sub
+    
+    Public Sub ShowFromTray(Optional ByVal promptDownload As Boolean = False)
+        On Error Resume Next
+        If formIsClosing Then Exit Sub
+        Me.ShowInTaskbar = True
+        Me.WindowState = vbNormal
+        Me.Show
+        SetForegroundWindow Me.hWnd
+        If promptDownload Then PromptDownloadFromToast
+        Err.Clear
+    End Sub
+    
+    Public Sub HandleTrayCallback(ByVal trayMsg As Long)
+        Dim menuCmd As Long
+        Dim dummy As Long
+        
+        On Error Resume Next
+        dummy = 0
+        Select Case trayMsg
+            Case WM_LBUTTONDBLCLK, WM_LBUTTONUP
+                PostMessage Me.hWnd, WM_TBHELPER_SHOWUI, 0, dummy
+            Case WM_RBUTTONUP
+                menuCmd = ShowTrayMenu()
+                Select Case menuCmd
+                    Case TRAY_CMD_OPEN
+                        PostMessage Me.hWnd, WM_TBHELPER_SHOWUI, 0, dummy
+                    Case TRAY_CMD_CHECK
+                        PostMessage Me.hWnd, WM_TBHELPER_CHECK, 0, dummy
+                    Case TRAY_CMD_DOWNLOAD
+                        PostMessage Me.hWnd, WM_TBHELPER_SHOWUI, 1, dummy
+                    Case TRAY_CMD_EXIT
+                        PostMessage Me.hWnd, WM_TBHELPER_EXIT, 0, dummy
+                End Select
+            Case NIN_BALLOONUSERCLICK
+                PostMessage Me.hWnd, WM_TBHELPER_SHOWUI, 1, dummy
+        End Select
+        Err.Clear
+    End Sub
+    
+    Public Sub CheckFromTray()
+        RunTrayVersionCheck True
+    End Sub
+    
+    Public Sub ExitFromTray()
+        g_TrayExitRequested = True
+        Unload Me
+    End Sub
+    
+    Private Sub tmrTrayCheck_Timer()
+        If m_trayFirstCheckPending Then
+            m_trayFirstCheckPending = False
+            tmrTrayCheck.Interval = 60000
+            RunTrayVersionCheck False
+            Exit Sub
+        End If
+        
+        m_trayMinuteCount = m_trayMinuteCount + 1
+        If m_trayMinuteCount >= tbHelperSettings.TrayCheckIntervalMinutes Then
+            m_trayMinuteCount = 0
+            RunTrayVersionCheck False
+        End If
+    End Sub
+    
+    Private Sub RunTrayVersionCheck(ByVal fromMenu As Boolean)
+        Dim installedVer As Integer
+        Dim latestVer As Integer
+        Dim toastText As String
+        
+        On Error GoTo checkFailed
+        If tbHelperSettings Is Nothing Then Exit Sub
+        If Not tbHelperSettings.DownloadFolder.IsValid Or Not tbHelperSettings.twinBASICFolder.IsValid Then
+            UpdateTrayTip "tBHelper - set the download and twinBASIC folders first"
+            If fromMenu Then
+                ShowFromTray
+                MessageBox("The download folder and twinBASIC folder must be set before a version check can run.", "info", "System tray monitor")
+            End If
+            Exit Sub
+        End If
+        
+        UpdateActivityLog "Tray check for new version"
+        installedVer = tbHelperSettings.twinBASICFolder.tBVersion
+        chgLogs.GetNewerReleasedVersions installedVer, True
+        
+        If chgLogs.tBVersionGap > 0 Then
+            latestVer = chgLogs.LatestVersion
+            g_PendingTrayVersion = latestVer
+            btnDownload.Caption = "Download version " & latestVer
+            btnDownload.ButtonImagePtr = GetImagePtr(resDownload)
+            FilltBChangeLog
+            SetInitialTypeFilters
+            EnableDownloadButton
+            UpdateTrayTip "tBHelper - version " & latestVer & " is available"
+            UpdateActivityLog "Newest version available is " & latestVer
+            
+            If fromMenu Or latestVer > tbHelperSettings.LastNotifiedVersion Then
+                toastText = "Version " & latestVer & " is available. You have " & installedVer & ". Click here to download or install it."
+                ShowTrayToast "New twinBASIC version", toastText
+                tbHelperSettings.LastNotifiedVersion = latestVer
+                tbHelperSettings.SaveSettings
+            End If
+        Else
+            g_PendingTrayVersion = 0
+            UpdateTrayTip "tBHelper - watching for twinBASIC updates"
+            UpdateActivityLog "No newer version available"
+            If fromMenu Then
+                ShowTrayToast "tBHelper", "No newer twinBASIC version is available. Installed version: " & installedVer
+            End If
+        End If
+        Exit Sub
+checkFailed:
+        UpdateActivityLog "Tray version check failed: " & Err.Description
+        If fromMenu Then ShowTrayToast "tBHelper", "The version check could not be completed."
+    End Sub
+    
+    Public Sub PromptDownloadFromToast()
+        Dim msgText As String
+        Dim response As String
+        
+        On Error Resume Next
+        If formIsClosing Then Exit Sub
+        If g_PendingTrayVersion = 0 And chgLogs.tBVersionGap = 0 Then
+            ShowFromTray
+            Exit Sub
+        End If
+        
+        ShowFromTray
+        FlushRedraws
+        DoEvents
+        
+        msgText = "twinBASIC version [font color=rgb(4, 55, 242)][b]" & chgLogs.LatestVersion & "[/b][/font] is available."
+        msgText = msgText & " Installed version is [b]" & tbHelperSettings.twinBASICFolder.tBVersion & "[/b]."
+        msgText = msgText & vbCrLf & vbCrLf & "Download / install it now?"
+        
+        response = MessageBox(msgText, "question", "New version available", "Yes", "Later")
+        If response = "Yes" Then
+            If btnDownload.Caption = CheckForVersion Then CheckForNewVersion
+            If btnDownload.Caption <> CheckForVersion Then btnDownload_Click
+        End If
+        Err.Clear
     End Sub
     
     Private Sub CalculateDPIValues()
