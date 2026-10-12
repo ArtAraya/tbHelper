@@ -250,6 +250,20 @@ Public chgLogs As New colChangeLogItems
 Public githubReleasesURL As String = "https://github.com/twinbasic/twinbasic/releases"
 Public activityLog As ucActivityLog
 
+Public Const TBHELPER_WINDOW_CAPTION As String = "tBHelper (RC1 12-22-25)"
+Public Const WM_TBHELPER_TRAY As Long = &H464
+Public Const WM_TBHELPER_SHOWUI As Long = &H465
+Public Const WM_TBHELPER_EXIT As Long = &H466
+Public Const WM_TBHELPER_CHECK As Long = &H467
+Public Const TRAY_CMD_OPEN As Long = 1001
+Public Const TRAY_CMD_CHECK As Long = 1002
+Public Const TRAY_CMD_DOWNLOAD As Long = 1003
+Public Const TRAY_CMD_EXIT As Long = 1004
+Public g_StartedInTray As Boolean
+Public g_TrayExitRequested As Boolean
+Public g_TrayIconAdded As Boolean
+Public g_PendingTrayVersion As Integer
+
 Public Function GetTBVersionInFolder(tBFolder As String) As String
 
     'WriteToDebugLogFile("GetCurrentTBVersion " & tBFolder)
@@ -825,5 +839,243 @@ Public Function GetDPIScale() As Double
         GetDPIScale = 1.0
     End If
     
+End Function
+
+'******************************************************
+'**** System tray monitor
+'******************************************************
+Private m_nid As NOTIFYICONDATAW
+Private m_formSubclassed As Boolean
+Private OriginalFormProc As LongPtr
+Private Const TRAY_ICON_ID As Long = 1
+
+Public Function CommandHasSwitch(ByVal switchName As String) As Boolean
+    CommandHasSwitch = (InStr(1, Command$, switchName, vbTextCompare) > 0)
+End Function
+
+Public Function ActivateExistingInstance() As Boolean
+    Dim hExisting As LongPtr
+    Dim dummy As Long
+    
+    On Error GoTo activateFailed
+    hExisting = FindWindow(vbNullString, TBHELPER_WINDOW_CAPTION)
+    If hExisting = 0 Then Exit Function
+    
+    ActivateExistingInstance = True
+    If CommandHasSwitch("/tray") Then Exit Function
+    
+    dummy = 0
+    PostMessage hExisting, WM_TBHELPER_SHOWUI, 0, dummy
+    Exit Function
+activateFailed:
+    ActivateExistingInstance = False
+End Function
+
+Public Function GetHelperExePath() As String
+    Dim exePath As String
+    Dim exeName As String
+    
+    exePath = App.Path
+    If Right$(exePath, 1) <> "\" Then exePath = exePath & "\"
+    exeName = App.EXEName
+    If LCase$(Right$(exeName, 4)) <> ".exe" Then exeName = exeName & ".exe"
+    GetHelperExePath = exePath & exeName
+End Function
+
+Public Function GetTrayStartupCmdPath() As String
+    GetTrayStartupCmdPath = Environ$("APPDATA") & "\Microsoft\Windows\Start Menu\Programs\Startup\tBHelper Tray.cmd"
+End Function
+
+Public Sub ApplyTrayStartupShortcut(ByVal enableStartup As Boolean)
+    Dim cmdPath As String
+    Dim ts As TextStream
+    
+    On Error GoTo startupFailed
+    If IsCodeRunningInTheIDE() Then Exit Sub
+    
+    cmdPath = GetTrayStartupCmdPath()
+    If enableStartup Then
+        Set ts = fso.CreateTextFile(cmdPath, True)
+        ts.WriteLine "@echo off"
+        ts.WriteLine "if exist """ & GetHelperExePath() & """ start """" """ & GetHelperExePath() & """ /tray"
+        ts.Close
+        Set ts = Nothing
+    ElseIf fso.FileExists(cmdPath) Then
+        fso.DeleteFile cmdPath, True
+    End If
+    Exit Sub
+startupFailed:
+    On Error Resume Next
+    If Not ts Is Nothing Then ts.Close
+End Sub
+
+Private Sub CopyToWideField(ByRef dest() As Integer, ByVal text As String)
+    Dim i As Long
+    Dim n As Long
+    
+    For i = 0 To UBound(dest)
+        dest(i) = 0
+    Next
+    n = Len(text)
+    If n > UBound(dest) Then n = UBound(dest)
+    For i = 1 To n
+        dest(i - 1) = AscW(Mid$(text, i, 1))
+    Next
+End Sub
+
+Private Function TrayIconHandle() As LongPtr
+    On Error Resume Next
+    If Not Form1.Icon Is Nothing Then
+        TrayIconHandle = Form1.Icon.Handle
+        If TrayIconHandle = 0 Then TrayIconHandle = Form1.Icon
+    End If
+    Err.Clear
+End Function
+
+Public Sub SubclassFormForTray()
+    On Error Resume Next
+    If m_formSubclassed Then Exit Sub
+    If Form1.hWnd = 0 Then Exit Sub
+    OriginalFormProc = GetWindowLong(Form1.hWnd, GWL_WNDPROC)
+    SetWindowLong Form1.hWnd, GWL_WNDPROC, AddressOf Form1_TrayWindowProc
+    m_formSubclassed = True
+    Err.Clear
+End Sub
+
+Public Sub UnsubclassFormForTray()
+    On Error Resume Next
+    If Not m_formSubclassed Then Exit Sub
+    If Form1.hWnd <> 0 And OriginalFormProc <> 0 Then
+        SetWindowLong Form1.hWnd, GWL_WNDPROC, OriginalFormProc
+    End If
+    m_formSubclassed = False
+    OriginalFormProc = 0
+    Err.Clear
+End Sub
+
+Public Function Form1_TrayWindowProc(ByVal hWnd As LongPtr, ByVal uMsg As Long, ByVal wParam As LongPtr, ByVal lParam As LongPtr) As LongPtr
+    Dim dummy As Long
+    
+    On Error Resume Next
+    If uMsg = WM_TBHELPER_TRAY Then
+        Form1.HandleTrayCallback CLng(lParam)
+        Exit Function
+    ElseIf uMsg = WM_TBHELPER_SHOWUI Then
+        dummy = CLng(wParam)
+        Form1.ShowFromTray (dummy <> 0)
+        Exit Function
+    ElseIf uMsg = WM_TBHELPER_EXIT Then
+        Form1.ExitFromTray
+        Exit Function
+    ElseIf uMsg = WM_TBHELPER_CHECK Then
+        Form1.CheckFromTray
+        Exit Function
+    End If
+    
+    Form1_TrayWindowProc = CallWindowProc(OriginalFormProc, hWnd, uMsg, wParam, lParam)
+End Function
+
+Public Sub AddTrayIcon()
+    Dim tipText As String
+    
+    On Error GoTo addFailed
+    If g_TrayIconAdded Then
+        UpdateTrayTip "tBHelper - watching for twinBASIC updates"
+        Exit Sub
+    End If
+    
+    SubclassFormForTray
+    
+    tipText = "tBHelper - watching for twinBASIC updates"
+    With m_nid
+        .cbSize = LenB(m_nid)
+        .hWnd = Form1.hWnd
+        .uID = TRAY_ICON_ID
+        .uFlags = NIF_MESSAGE Or NIF_ICON Or NIF_TIP Or NIF_SHOWTIP
+        .uCallbackMessage = WM_TBHELPER_TRAY
+        .hIcon = TrayIconHandle()
+        .dwInfoFlags = NIIF_INFO
+    End With
+    CopyToWideField m_nid.szTip, tipText
+    
+    If Shell_NotifyIconW(NIM_ADD, m_nid) = 0 Then Exit Sub
+    
+    m_nid.uTimeoutAndVersion = NOTIFYICON_VERSION
+    Shell_NotifyIconW NIM_SETVERSION, m_nid
+    g_TrayIconAdded = True
+    Exit Sub
+addFailed:
+    g_TrayIconAdded = False
+End Sub
+
+Public Sub RemoveTrayIcon()
+    On Error Resume Next
+    If g_TrayIconAdded Then
+        m_nid.cbSize = LenB(m_nid)
+        m_nid.hWnd = Form1.hWnd
+        m_nid.uID = TRAY_ICON_ID
+        Shell_NotifyIconW NIM_DELETE, m_nid
+        g_TrayIconAdded = False
+    End If
+    UnsubclassFormForTray
+    Err.Clear
+End Sub
+
+Public Sub UpdateTrayTip(ByVal tipText As String)
+    On Error Resume Next
+    If Not g_TrayIconAdded Then Exit Sub
+    m_nid.uFlags = NIF_TIP Or NIF_SHOWTIP Or NIF_ICON Or NIF_MESSAGE
+    m_nid.hIcon = TrayIconHandle()
+    CopyToWideField m_nid.szTip, tipText
+    Shell_NotifyIconW NIM_MODIFY, m_nid
+    Err.Clear
+End Sub
+
+Public Sub ShowTrayToast(ByVal titleText As String, ByVal infoText As String)
+    On Error Resume Next
+    If Not g_TrayIconAdded Then AddTrayIcon
+    If Not g_TrayIconAdded Then Exit Sub
+    
+    m_nid.uFlags = NIF_INFO Or NIF_TIP Or NIF_SHOWTIP Or NIF_ICON Or NIF_MESSAGE
+    m_nid.dwInfoFlags = NIIF_INFO
+    m_nid.uTimeoutAndVersion = 30000
+    m_nid.hIcon = TrayIconHandle()
+    CopyToWideField m_nid.szInfoTitle, titleText
+    CopyToWideField m_nid.szInfo, infoText
+    Shell_NotifyIconW NIM_MODIFY, m_nid
+    Err.Clear
+End Sub
+
+Public Function ShowTrayMenu() As Long
+    Dim hMenu As LongPtr
+    Dim pt As POINTAPI
+    Dim cmd As Long
+    Dim downloadCaption As String
+    
+    On Error GoTo menuFailed
+    GetCursorPos pt
+    hMenu = CreatePopupMenu()
+    AppendMenu hMenu, MF_STRING, TRAY_CMD_OPEN, "Open tBHelper"
+    AppendMenu hMenu, MF_STRING, TRAY_CMD_CHECK, "Check for new version now"
+    If g_PendingTrayVersion > 0 Then
+        downloadCaption = "Download / install version " & CStr(g_PendingTrayVersion)
+        AppendMenu hMenu, MF_STRING, TRAY_CMD_DOWNLOAD, downloadCaption
+    End If
+    AppendMenu hMenu, MF_SEPARATOR, 0, vbNullString
+    AppendMenu hMenu, MF_STRING, TRAY_CMD_EXIT, "Exit"
+    
+    SetForegroundWindow Form1.hWnd
+    cmd = TrackPopupMenu(hMenu, TPM_RIGHTBUTTON Or TPM_BOTTOMALIGN Or TPM_RETURNCMD, pt.X, pt.Y, 0, Form1.hWnd, ByVal 0)
+    DestroyMenu hMenu
+    ShowTrayMenu = cmd
+    Exit Function
+menuFailed:
+    On Error Resume Next
+    If hMenu <> 0 Then DestroyMenu hMenu
+    ShowTrayMenu = 0
+End Function
+
+Public Function TrayIconIsActive() As Boolean
+    TrayIconIsActive = g_TrayIconAdded
 End Function
 
